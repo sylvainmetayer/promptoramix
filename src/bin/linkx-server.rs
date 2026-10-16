@@ -44,6 +44,8 @@ struct Config {
     secret: Option<String>,
     margin_ms: u64,
     threads: usize,
+    /// Fils d'une recherche seule en cours : les cœurs des autres sont libres.
+    solo_threads: usize,
     tuning: String,
     searches: Semaphore,
     games: Games,
@@ -229,6 +231,8 @@ impl Config {
             secret: std::env::var("LINKX_SECRET").ok().filter(|s| !s.is_empty()),
             margin_ms: env_number("LINKX_MARGIN_MS", 1500),
             threads: env_number("LINKX_THREADS", 1).max(1) as usize,
+            solo_threads: env_number("LINKX_SOLO_THREADS", env_number("LINKX_THREADS", 1)).max(1)
+                as usize,
             tuning: std::env::var("LINKX_CONFIG").unwrap_or_default(),
             searches: Semaphore::new(MAX_SEARCHES),
             games: Games::new(env_number("LINKX_GAMES", 3) as usize),
@@ -334,6 +338,11 @@ async fn play(
         let search = tokio::task::spawn_blocking(move || {
             let _active = ActiveSearch::enter(&config.games.active);
             config.games.stop_ponders();
+            let threads = if config.games.active.load(SeqCst) == 1 {
+                config.solo_threads
+            } else {
+                config.threads
+            };
             let slot = if permitted {
                 config.games.slot(&game, &config.tuning, config.threads)
             } else {
@@ -343,7 +352,11 @@ async fn play(
                 Some(slot) => {
                     let mut guard = take(&slot.searcher, &slot.stop);
                     let time = search_deadline.saturating_duration_since(Instant::now());
-                    guard.search(&pos, time.max(Duration::from_millis(50)), 64)
+                    guard.options.threads = threads;
+                    let result = guard.search(&pos, time.max(Duration::from_millis(50)), 64);
+                    // La réflexion, qui peut courir pour plusieurs parties, garde `LINKX_THREADS`.
+                    guard.options.threads = config.threads;
+                    result
                 }
                 None => {
                     let (tt_bits, time) = if permitted {
@@ -356,7 +369,7 @@ async fn play(
                     };
                     let mut searcher = Searcher::new(tt_bits);
                     searcher.configure(&config.tuning);
-                    searcher.options.threads = config.threads;
+                    searcher.options.threads = threads;
                     searcher.search(&pos, time, 64)
                 }
             };
@@ -469,6 +482,7 @@ mod tests {
             secret: secret.map(str::to_string),
             margin_ms: 1500,
             threads: 1,
+            solo_threads: 1,
             tuning: String::new(),
             searches: Semaphore::new(MAX_SEARCHES),
             games: Games::new(3),
