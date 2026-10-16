@@ -1,7 +1,7 @@
 //! Recherche alpha-bêta à approfondissement itératif, bornée dans le temps.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
@@ -90,56 +90,10 @@ const EXACT: u8 = 0;
 const LOWER: u8 = 1;
 const UPPER: u8 = 2;
 
-struct Zobrist {
-    cells: [[u64; 81]; 2],
-    inv: [[[u64; 3]; SHAPES]; 2],
-    side: u64,
-}
-
-fn zobrist() -> &'static Zobrist {
-    static Z: OnceLock<Zobrist> = OnceLock::new();
-    Z.get_or_init(|| {
-        let mut s = 0x9E37_79B9_7F4A_7C15u64;
-        let mut next = || {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            s
-        };
-        let mut z = Zobrist {
-            cells: [[0; 81]; 2],
-            inv: [[[0; 3]; SHAPES]; 2],
-            side: 0,
-        };
-        for p in 0..2 {
-            for i in 0..81 {
-                z.cells[p][i] = next();
-            }
-            for sh in 0..SHAPES {
-                for c in 0..3 {
-                    z.inv[p][sh][c] = next();
-                }
-            }
-        }
-        z.side = next();
-        z
-    })
-}
-
+/// Empreinte Zobrist, tenue à jour par la position elle-même.
+#[inline]
 pub fn hash(pos: &Position) -> u64 {
-    let z = zobrist();
-    let mut h = if pos.to_move == 1 { z.side } else { 0 };
-    for p in 0..2 {
-        let mut b = pos.bb[p];
-        while b != 0 {
-            h ^= z.cells[p][b.trailing_zeros() as usize];
-            b &= b - 1;
-        }
-        for sh in 0..SHAPES {
-            h ^= z.inv[p][sh][pos.inv[p][sh] as usize];
-        }
-    }
-    h
+    pos.key
 }
 
 /// Les scores de mat comptent les demi-coups depuis la racine ; la table les
