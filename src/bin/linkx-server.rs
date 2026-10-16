@@ -45,6 +45,10 @@ fn signature_ok(secret: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     mac.verify_slice(&expected).is_ok()
 }
 
+fn threads() -> usize {
+    std::env::var("LINKX_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1)
+}
+
 /// Temps de réflexion : une marge fixe pour le réseau, plafonné.
 fn budget(deadline_ms: u64) -> Duration {
     let margin: u64 = std::env::var("LINKX_MARGIN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
@@ -79,7 +83,12 @@ async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
         eprintln!("[{}] couleur annoncée {} mais {} au trait", req.game, req.color, expected);
     }
     let time = budget(req.deadline_ms.unwrap_or(6000));
-    let result = tokio::task::spawn_blocking(move || Searcher::new(22).search(&pos, time, 64))
+    let result = tokio::task::spawn_blocking(move || {
+        let mut searcher = Searcher::new(22);
+        searcher.configure(&std::env::var("LINKX_CONFIG").unwrap_or_default());
+        searcher.options.threads = threads();
+        searcher.search(&pos, time, 64)
+    })
         .await
         .ok()
         .flatten();
@@ -98,6 +107,8 @@ async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
+    // Un réglage invalide doit faire échouer le démarrage, pas une partie.
+    Searcher::new(4).configure(&std::env::var("LINKX_CONFIG").unwrap_or_default());
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let app = Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))

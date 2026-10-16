@@ -44,6 +44,7 @@ fn main() {
         return;
     }
     let mut searcher = Searcher::new(flag("--tt", 22) as u32);
+    searcher.configure(&std::env::var("LINKX_CONFIG").unwrap_or_default());
     let budget = Duration::from_millis(flag("--ms", 4500));
     let Some(r) = searcher.search(&pos, budget, flag("--depth", 64) as u32) else {
         eprintln!("aucun coup à jouer");

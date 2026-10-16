@@ -1,6 +1,7 @@
 //! Recherche alpha-bêta à approfondissement itératif, bornée dans le temps.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
@@ -19,13 +20,62 @@ pub struct SearchResult {
     pub elapsed: Duration,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct Entry {
-    key: u64,
     depth: i8,
     bound: u8,
     score: i32,
     best: Option<Move>,
+}
+
+impl Entry {
+    fn pack(self) -> u64 {
+        let mv = self.best.map_or(0, |m| {
+            1 | (m.shape as u64) << 1 | (m.orient as u64) << 4 | (m.col as u64) << 7
+        });
+        (self.score as u32 as u64) | (self.depth as u8 as u64) << 32 | (self.bound as u64) << 40 | mv << 42
+    }
+
+    fn unpack(data: u64) -> Self {
+        let mv = data >> 42;
+        Entry {
+            score: data as u32 as i32,
+            depth: (data >> 32) as u8 as i8,
+            bound: ((data >> 40) & 3) as u8,
+            best: (mv & 1 == 1).then(|| Move {
+                shape: ((mv >> 1) & 7) as u8,
+                orient: ((mv >> 4) & 7) as u8,
+                col: ((mv >> 7) & 15) as u8,
+            }),
+        }
+    }
+}
+
+/// Table de transposition partagée entre fils, sans verrou : la clé est
+/// stockée XOR la donnée, une écriture déchirée se lit comme une absence.
+pub struct Table {
+    slots: Vec<[AtomicU64; 2]>,
+    mask: usize,
+}
+
+impl Table {
+    pub fn new(bits: u32) -> Self {
+        let size = 1usize << bits;
+        Table { slots: (0..size).map(|_| [AtomicU64::new(0), AtomicU64::new(0)]).collect(), mask: size - 1 }
+    }
+
+    fn probe(&self, key: u64) -> Option<Entry> {
+        let slot = &self.slots[key as usize & self.mask];
+        let (k, d) = (slot[0].load(Relaxed), slot[1].load(Relaxed));
+        (k ^ d == key && d != 0).then(|| Entry::unpack(d))
+    }
+
+    fn store(&self, key: u64, e: Entry) {
+        let slot = &self.slots[key as usize & self.mask];
+        let d = e.pack();
+        slot[0].store(key ^ d, Relaxed);
+        slot[1].store(d, Relaxed);
+    }
 }
 
 const EXACT: u8 = 0;
@@ -81,8 +131,9 @@ pub fn hash(pos: &Position) -> u64 {
 }
 
 pub struct Searcher {
-    tt: Vec<Entry>,
-    mask: usize,
+    tt: Arc<Table>,
+    stop: Arc<AtomicBool>,
+    helper: bool,
     history: Box<[[[u32; 9]; 8]; SHAPES]>,
     killers: [[Option<Move>; 2]; MAX_PLY],
     nodes: u64,
@@ -98,16 +149,18 @@ pub struct Options {
     pub eval_order: bool,
     /// Ne pas entamer d'itération après le premier tiers du budget.
     pub stop_early: bool,
+    /// Nombre de fils de recherche (Lazy SMP), 1 par défaut.
+    pub threads: usize,
 }
 
-pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true, stop_early: false };
+pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true, stop_early: false, threads: 1 };
 
 impl Searcher {
     pub fn new(tt_bits: u32) -> Self {
-        let size = 1usize << tt_bits;
         Searcher {
-            tt: vec![Entry::default(); size],
-            mask: size - 1,
+            tt: Arc::new(Table::new(tt_bits)),
+            stop: Arc::new(AtomicBool::new(false)),
+            helper: false,
             history: Box::new([[[0; 9]; 8]; SHAPES]),
             killers: [[None; 2]; MAX_PLY],
             nodes: 0,
@@ -118,11 +171,56 @@ impl Searcher {
         }
     }
 
+    /// Réglages `clé=valeur,…` (poids d'évaluation et options), pour les bancs d'essai.
+    pub fn configure(&mut self, spec: &str) {
+        let s = self;
+        for kv in spec.split(',').filter(|k| !k.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("clé=valeur");
+            let n: i32 = v.parse().unwrap();
+            let w = &mut s.weights;
+            match k {
+                "empty" => w.empty = n,
+                "gap" => w.gap = n,
+                "distance" => w.distance = n,
+                "second" => w.second_axis = n,
+                "zone" => w.zone = n,
+                "tempo" => w.tempo = n,
+                "nok" => w.narrow_ok = n,
+                "nnone" => w.narrow_none = n,
+                "lmr" => s.options.lmr = n != 0,
+                "eo" => s.options.eval_order = n != 0,
+                "early" => s.options.stop_early = n != 0,
+            "threads" => s.options.threads = n.max(1) as usize,
+                _ => panic!("clé inconnue {k}"),
+            }
+        }
+    }
+
     fn time_up(&mut self) -> bool {
-        if self.nodes & 255 == 0 && Instant::now() >= self.deadline {
-            self.stopped = true;
+        if self.nodes & 255 == 0 {
+            if !self.helper && Instant::now() >= self.deadline {
+                self.stop.store(true, Relaxed);
+            }
+            if self.stop.load(Relaxed) {
+                self.stopped = true;
+            }
         }
         self.stopped
+    }
+
+    fn spawn_helper(&self) -> Searcher {
+        Searcher {
+            tt: self.tt.clone(),
+            stop: self.stop.clone(),
+            helper: true,
+            history: self.history.clone(),
+            killers: [[None; 2]; MAX_PLY],
+            nodes: 0,
+            deadline: self.deadline,
+            stopped: false,
+            weights: self.weights,
+            options: self.options,
+        }
     }
 
     /// Coup gagnant immédiat du joueur au trait, s'il existe.
@@ -190,10 +288,8 @@ impl Searcher {
         }
 
         let key = hash(pos);
-        let slot = (key as usize) & self.mask;
-        let e = self.tt[slot];
         let mut tt_move = None;
-        if e.key == key {
+        if let Some(e) = self.tt.probe(key) {
             tt_move = e.best;
             if e.depth as i32 >= depth {
                 let s = e.score;
@@ -290,31 +386,52 @@ impl Searcher {
         } else {
             EXACT
         };
-        self.tt[slot] = Entry { key, depth: depth as i8, bound, score: best, best: Some(best_move) };
+        self.tt.store(key, Entry { depth: depth as i8, bound, score: best, best: Some(best_move) });
         best
     }
 
     pub fn search(&mut self, pos: &Position, budget: Duration, max_depth: u32) -> Option<SearchResult> {
         let start = Instant::now();
         self.deadline = start + budget;
-        self.stopped = false;
-        self.nodes = 0;
+        self.stop.store(false, Relaxed);
         let mut moves = Vec::new();
         pos.legal_moves(&mut moves);
         if moves.is_empty() || pos.outcome.is_some() {
             return None;
         }
-        let done = |best, score, depth, nodes| SearchResult {
-            best,
-            score,
-            depth,
-            nodes,
-            elapsed: start.elapsed(),
-        };
         if let Some(m) = Self::winning_move(pos, &moves) {
-            return Some(done(m, MATE - 1, 1, 1));
+            return Some(SearchResult { best: m, score: MATE - 1, depth: 1, nodes: 1, elapsed: start.elapsed() });
         }
         self.order(&mut moves, None, 0);
+        let helpers = self.options.threads.max(1) - 1;
+        let mut result = std::thread::scope(|scope| {
+            let handles: Vec<_> = (1..=helpers)
+                .map(|i| {
+                    let mut h = self.spawn_helper();
+                    let mut root = moves.clone();
+                    let len = root.len();
+                    root.rotate_left(i * 7 % len);
+                    scope.spawn(move || {
+                        h.iterate(pos, root, max_depth, budget, start);
+                        h.nodes
+                    })
+                })
+                .collect();
+            let mut r = self.iterate(pos, moves, max_depth, budget, start);
+            self.stop.store(true, Relaxed);
+            for h in handles {
+                r.nodes += h.join().unwrap_or(0);
+            }
+            r
+        });
+        result.elapsed = start.elapsed();
+        Some(result)
+    }
+
+    fn iterate(&mut self, pos: &Position, mut moves: Vec<Move>, max_depth: u32, budget: Duration, start: Instant) -> SearchResult {
+        self.stopped = false;
+        self.nodes = 0;
+        let done = |best, score, depth, nodes| SearchResult { best, score, depth, nodes, elapsed: start.elapsed() };
         let mut result = done(moves[0], 0, 0, 0);
         for depth in 1..=max_depth {
             let mut alpha = -MATE * 2;
@@ -364,8 +481,7 @@ impl Searcher {
             }
         }
         result.nodes = self.nodes;
-        result.elapsed = start.elapsed();
-        Some(result)
+        result
     }
 }
 
@@ -394,6 +510,26 @@ mod tests {
         let mut replies = Vec::new();
         after.legal_moves(&mut replies);
         assert!(Searcher::winning_move(&after, &replies).is_none(), "{}", format_move(r.best));
+    }
+
+    #[test]
+    fn table_round_trip() {
+        let t = Table::new(4);
+        let e = Entry { depth: 7, bound: LOWER, score: -12345, best: Some(Move { shape: 6, orient: 7, col: 8 }) };
+        t.store(0xDEAD_BEEF, e);
+        let got = t.probe(0xDEAD_BEEF).unwrap();
+        assert_eq!((got.depth, got.bound, got.score, got.best), (7, LOWER, -12345, e.best));
+        assert!(t.probe(0xDEAD_BEEF ^ 1 << 40).is_none());
+    }
+
+    #[test]
+    fn several_threads_return_a_legal_move() {
+        let pos = parse_record("4Lr35 3Ir15").unwrap();
+        let mut s = Searcher::new(16);
+        s.configure("threads=3");
+        let r = s.search(&pos, Duration::from_millis(300), 64).unwrap();
+        let mut p = pos;
+        assert!(p.play(r.best).is_ok());
     }
 
     #[test]

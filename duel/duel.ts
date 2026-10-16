@@ -14,12 +14,17 @@ const GAMES = arg('--games', 4)
 const OURS_MS = arg('--ours-ms', 4500)
 const HOUSE_MS = arg('--house-ms', 900)
 const BIN = new URL('../target/release/linkx-cli', import.meta.url).pathname
-const starts = process.argv.includes('--openings') ? ['', ...OPENINGS.map((o) => o.notation)] : ['']
+const startIndex = process.argv.indexOf('--start')
+const starts = startIndex >= 0 ? [process.argv[startIndex + 1]] : process.argv.includes('--openings') ? ['', ...OPENINGS.map((o) => o.notation)] : ['']
+const ONLY = process.argv.includes('--blue-only') ? 'blue' : process.argv.includes('--white-only') ? 'white' : null
 
 let score = { ours: 0, house: 0, draw: 0, fault: 0 }
+const shardArg = process.argv.indexOf('--shard')
+const [SHARD, SHARDS] = shardArg >= 0 ? process.argv[shardArg + 1].split('/').map(Number) : [0, 1]
 for (let g = 0; g < GAMES; g++) {
+  if (g % SHARDS !== SHARD) continue
   const start = starts[Math.floor(g / 2) % starts.length]
-  const oursColor = g % 2 === 0 ? 'blue' : 'white'
+  const oursColor = ONLY ?? (g % 2 === 0 ? 'blue' : 'white')
   let record = start
   let fault = ''
   const t0 = Date.now()

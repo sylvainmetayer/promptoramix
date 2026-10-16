@@ -13,26 +13,6 @@ const OPENINGS: [&str; 17] = [
     "3Ir15", "4Tr22", "3Ir12", "3Ir17", "3Ir14", "2r15", "3Lr24",
 ];
 
-fn configure(s: &mut Searcher, spec: &str) {
-    for kv in spec.split(',').filter(|k| !k.is_empty()) {
-        let (k, v) = kv.split_once('=').expect("clé=valeur");
-        let n: i32 = v.parse().unwrap();
-        let w = &mut s.weights;
-        match k {
-            "empty" => w.empty = n,
-            "gap" => w.gap = n,
-            "distance" => w.distance = n,
-            "second" => w.second_axis = n,
-            "zone" => w.zone = n,
-            "tempo" => w.tempo = n,
-            "lmr" => s.options.lmr = n != 0,
-            "eo" => s.options.eval_order = n != 0,
-            "early" => s.options.stop_early = n != 0,
-            _ => panic!("clé inconnue {k}"),
-        }
-    }
-}
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let get = |name: &str, d: &str| {
@@ -71,8 +51,8 @@ fn main() {
             std::thread::spawn(move || {
                 let mut sa = Searcher::new(20);
                 let mut sb = Searcher::new(20);
-                configure(&mut sa, &a);
-                configure(&mut sb, &b);
+                sa.configure(&a);
+                sb.configure(&b);
                 loop {
                     let Some((o, a_color)) = jobs.lock().unwrap().pop() else { return };
                     let mut pos = starts[o];

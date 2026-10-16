@@ -1,6 +1,6 @@
 //! Évaluation statique : distance de connexion pondérée par la gravité.
 
-use crate::game::{COL0, COL8, N, Position, ROW0, ROW8, largest_zone, spread};
+use crate::game::{COL0, COL8, FULL, N, Position, ROW0, ROW8, largest_zone, spread};
 use crate::pieces::{SHAPE_SIZES, SHAPES};
 
 #[derive(Debug, Clone, Copy)]
@@ -16,10 +16,13 @@ pub struct Weights {
     /// Poids d'une case d'écart de plus grande zone, en fin de partie.
     pub zone: i32,
     pub tempo: i32,
+    /// Surcoût d'une case étroite, selon qu'il reste ou non une pièce étroite.
+    pub narrow_ok: i32,
+    pub narrow_none: i32,
 }
 
 pub const DEFAULT_WEIGHTS: Weights =
-    Weights { empty: 4, gap: 3, distance: 40, second_axis: 12, zone: 30, tempo: 60 };
+    Weights { empty: 4, gap: 3, distance: 40, second_axis: 12, zone: 30, tempo: 60, narrow_ok: 0, narrow_none: 0 };
 
 pub const UNREACHABLE: i32 = 400;
 
@@ -37,15 +40,27 @@ const ROW_LAST: u128 = ROW8;
 pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     let own = pos.bb[p];
     let blocked = pos.bb[1 - p];
-    // classes[g] : cases vides avec `g` cases vides dessous.
-    let mut classes = [0u128; N];
+    let occ = pos.occupied();
+    // Case vide coincée entre deux cases pleines ou un bord : seule une pièce
+    // étroite (mono, domino, barre) peut encore s'y loger sans appui latéral.
+    let narrow = !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL;
+    let has_narrow = pos.inv[p][0] + pos.inv[p][1] + pos.inv[p][2] > 0;
+    let narrow_cost = if has_narrow { w.narrow_ok } else { w.narrow_none };
+    // classes[g] : cases vides avec `g` cases vides dessous ; +N si étroites.
+    let mut classes = [0u128; K];
     for x in 0..N {
         let surface = 8 - pos.heights[x] as i32;
         for y in 0..=surface {
             classes[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
         }
     }
-    let costs: [i32; N] = std::array::from_fn(|g| w.empty + w.gap * g as i32);
+    for g in 0..N {
+        classes[g + N] = classes[g] & narrow;
+        classes[g] &= !narrow;
+    }
+    let costs: [i32; K] = std::array::from_fn(|k| {
+        w.empty + w.gap * (k % N) as i32 + if k >= N { narrow_cost } else { 0 }
+    });
     let lr = shortest(own, blocked, &classes, &costs, COL_FIRST, COL_LAST);
     let tb = shortest(own, blocked, &classes, &costs, ROW_FIRST, ROW_LAST);
     (lr, tb)
@@ -53,10 +68,12 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
 
 const BUCKETS: usize = UNREACHABLE as usize + 64;
 
-fn shortest(own: u128, blocked: u128, classes: &[u128; N], costs: &[i32; N], start: u128, goal: u128) -> i32 {
+const K: usize = 2 * N;
+
+fn shortest(own: u128, blocked: u128, classes: &[u128; K], costs: &[i32; K], start: u128, goal: u128) -> i32 {
     let mut buckets = [0u128; BUCKETS];
     buckets[0] = start & own;
-    for g in 0..N {
+    for g in 0..K {
         let c = costs[g] as usize;
         if c < BUCKETS {
             buckets[c] |= start & classes[g];
@@ -80,7 +97,7 @@ fn shortest(own: u128, blocked: u128, classes: &[u128; N], costs: &[i32; N], sta
         }
         settled |= cur;
         let frontier = spread(cur) & !settled;
-        for g in 0..N {
+        for g in 0..K {
             let reach = frontier & classes[g];
             if reach != 0 {
                 let nd = d + costs[g] as usize;
