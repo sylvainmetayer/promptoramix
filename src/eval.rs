@@ -23,6 +23,14 @@ pub struct Weights {
     pub deep_wells: bool,
     /// Le grand L comble un puits de deux cases.
     pub wells3: bool,
+    /// Pas de saut de score quand un axe devient inatteignable.
+    pub cliff: bool,
+    /// Poids des zones renforcé en phase de blocage.
+    pub zone_phase: bool,
+    /// Une case au-dessus du chemin ne paie pas de creux.
+    pub vstep: bool,
+    /// Valeur d'une pièce étroite gardée en réserve, selon les puits.
+    pub narrow_keep: i32,
 }
 
 pub const DEFAULT_WEIGHTS: Weights = Weights {
@@ -36,6 +44,10 @@ pub const DEFAULT_WEIGHTS: Weights = Weights {
     narrow_none: 0,
     deep_wells: true,
     wells3: false,
+    cliff: false,
+    zone_phase: false,
+    vstep: false,
+    narrow_keep: 0,
 };
 
 pub const UNREACHABLE: i32 = 400;
@@ -109,8 +121,10 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
         }
     }
     let active = &active[..n];
-    let lr = shortest(own, blocked, active, COL_FIRST, COL_LAST);
-    let tb = shortest(own, blocked, active, ROW_FIRST, ROW_LAST);
+    let vstep = w.vstep.then_some((w.empty.max(0) as usize).min(RING - 1));
+    let lr = shortest(own, blocked, active, vstep, COL_FIRST, COL_LAST);
+    // Du bas vers le haut : `vstep` ne joue qu'en montant.
+    let tb = shortest(own, blocked, active, vstep, ROW_LAST, ROW_FIRST);
     (lr, tb)
 }
 
@@ -120,7 +134,14 @@ const RING: usize = 64;
 
 const K: usize = 2 * N;
 
-fn shortest(own: u128, blocked: u128, active: &[(u128, usize)], start: u128, goal: u128) -> i32 {
+fn shortest(
+    own: u128,
+    blocked: u128,
+    active: &[(u128, usize)],
+    vstep: Option<usize>,
+    start: u128,
+    goal: u128,
+) -> i32 {
     let mut ring = [0u128; RING];
     let mut pending = 0u64;
     let push = |ring: &mut [u128; RING], pending: &mut u64, at: usize, cells: u128| {
@@ -154,7 +175,14 @@ fn shortest(own: u128, blocked: u128, active: &[(u128, usize)], start: u128, goa
             return (d as i32).min(UNREACHABLE);
         }
         settled |= cur;
-        let frontier = spread(cur) & !settled;
+        let mut frontier = spread(cur) & !settled;
+        if let Some(step) = vstep {
+            // Posée sur une case du chemin, la case du dessus n'a plus de creux
+            // à combler : une tour se compte case par case.
+            let above = (cur >> N) & frontier & !own;
+            push(&mut ring, &mut pending, d + step, above);
+            frontier &= !above;
+        }
         for &(cells, step) in active {
             push(&mut ring, &mut pending, d + step, frontier & cells);
         }
@@ -162,24 +190,58 @@ fn shortest(own: u128, blocked: u128, active: &[(u128, usize)], start: u128, goa
     UNREACHABLE
 }
 
-fn connection_score(pos: &Position, p: usize, w: &Weights) -> i32 {
+/// Score de connexion de `p` (plus petit = mieux), et s'il a un axe coupé.
+fn connection_score(pos: &Position, p: usize, w: &Weights) -> (i32, bool) {
     let (lr, tb) = distances(pos, p, w);
-    let (best, other) = if lr <= tb { (lr, tb) } else { (tb, lr) };
-    let mut d = best * 16 + other * w.second_axis;
-    if best >= UNREACHABLE || best / w.empty.max(1) > remaining_cells(pos, p) {
-        d = UNREACHABLE * 20;
+    let (best, mut other) = if lr <= tb { (lr, tb) } else { (tb, lr) };
+    let infeasible = best >= UNREACHABLE || best / w.empty.max(1) > remaining_cells(pos, p);
+    if w.cliff {
+        // Pas de falaise : l'axe secondaire ne pèse jamais plus que l'écart à
+        // l'axe principal, et un joueur coupé vaut la pire distance atteignable.
+        other = other.min(best + 60);
+        let worst = UNREACHABLE * 16 + (UNREACHABLE + 60) * w.second_axis;
+        let d = if infeasible {
+            worst
+        } else {
+            (best * 16 + other * w.second_axis).min(worst)
+        };
+        return (d, other >= UNREACHABLE || infeasible);
     }
-    d
+    let d = if infeasible {
+        UNREACHABLE * 20
+    } else {
+        best * 16 + other * w.second_axis
+    };
+    (d, other >= UNREACHABLE || infeasible)
 }
 
 /// Score pour le joueur au trait.
 pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     let p = pos.to_move;
     let q = 1 - p;
-    let dist = (connection_score(pos, q, w) - connection_score(pos, p, w)) * w.distance / 16;
+    let (dp, cut_p) = connection_score(pos, p, w);
+    let (dq, cut_q) = connection_score(pos, q, w);
+    let dist = (dq - dp) * w.distance / 16;
     let filled = pos.occupied().count_ones() as i32;
     let zones = largest_zone(pos.bb[p]) as i32 - largest_zone(pos.bb[q]) as i32;
-    dist + zones * w.zone * filled / 81 + w.tempo
+    let narrow_left = |r: usize| pos.inv[r][0] + pos.inv[r][1] + pos.inv[r][2] > 0;
+    let zone_weight = if w.zone_phase && (cut_p || cut_q || !narrow_left(p) || !narrow_left(q)) {
+        // Phase de blocage : le départage aux zones devient l'enjeu.
+        w.zone + 120
+    } else {
+        w.zone * filled / 81
+    };
+    let keep = if w.narrow_keep != 0 {
+        // Une pièce étroite en réserve vaut d'autant plus qu'il y a de puits.
+        let occ = pos.occupied();
+        let narrow = !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL;
+        let wells = narrow.count_ones() as i32;
+        let held = |r: usize| (pos.inv[r][0] + pos.inv[r][1] + pos.inv[r][2]) as i32;
+        (held(p) - held(q)) * w.narrow_keep * (1 + wells.min(12)) / 4
+    } else {
+        0
+    };
+    dist + zones * zone_weight + keep + w.tempo
 }
 
 #[cfg(test)]
@@ -224,6 +286,18 @@ mod tests {
         );
         assert!(naive.0 < UNREACHABLE && naive.1 < UNREACHABLE);
         assert_eq!(aware, (UNREACHABLE, UNREACHABLE));
+    }
+
+    #[test]
+    fn vertical_step_makes_towers_as_cheap_as_rows() {
+        let pos = Position::new(BLUE);
+        let w = Weights {
+            vstep: true,
+            ..DEFAULT_WEIGHTS
+        };
+        let (lr, tb) = distances(&pos, BLUE, &w);
+        assert_eq!(lr, 9 * w.empty);
+        assert_eq!(tb, 9 * w.empty);
     }
 
     #[test]

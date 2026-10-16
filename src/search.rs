@@ -205,6 +205,8 @@ pub struct Searcher {
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub lmr: bool,
+    /// Ne pas réduire les coups de pièces étroites (mono, domino, barre).
+    pub lmr_spare_narrow: bool,
     pub eval_order: bool,
     /// Profondeur restante minimale pour ordonner par évaluation statique.
     pub eval_order_depth: i32,
@@ -222,6 +224,7 @@ pub struct Options {
 
 pub const DEFAULT_OPTIONS: Options = Options {
     lmr: true,
+    lmr_spare_narrow: false,
     eval_order: true,
     eval_order_depth: 3,
     threat_extension: false,
@@ -272,6 +275,11 @@ impl Searcher {
                 "book" => s.options.book = n != 0,
                 "ecache" => s.options.eval_cache = n != 0,
                 "wells3" => w.wells3 = n != 0,
+                "cliff" => w.cliff = n != 0,
+                "lmrn" => s.options.lmr_spare_narrow = n != 0,
+                "nkeep" => w.narrow_keep = n,
+                "zphase" => w.zone_phase = n != 0,
+                "vstep" => w.vstep = n != 0,
                 "early" => s.options.stop_early = n != 0,
                 "threads" => s.options.threads = n.max(1) as usize,
                 _ => panic!("clé inconnue {k}"),
@@ -456,7 +464,10 @@ impl Searcher {
                 }
             };
             let quiet = Some(m) != tt_move && Some(m) != killers[0] && Some(m) != killers[1];
-            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet {
+            // Les victoires forcées manquées passaient surtout par un domino ou
+            // une barre, rangés tard puis réduits : on les cherche en entier.
+            let narrow_piece = self.options.lmr_spare_narrow && m.shape <= 2;
+            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet && !narrow_piece {
                 if i >= 12 { 2 } else { 1 }
             } else {
                 0
@@ -559,12 +570,14 @@ impl Searcher {
                     let len = root.len();
                     root.rotate_left(i * 7 % len);
                     scope.spawn(move || {
-                        h.iterate(pos, root, max_depth, budget, start);
+                        // Un auxiliaire sur deux cherche un cran plus profond que
+                        // le fil principal : il remplit la table en avance.
+                        h.iterate(pos, root, max_depth, budget, start, (i % 2) as u32);
                         h.nodes
                     })
                 })
                 .collect();
-            let mut r = self.iterate(pos, moves, max_depth, budget, start);
+            let mut r = self.iterate(pos, moves, max_depth, budget, start, 0);
             self.stop.store(true, Relaxed);
             for h in handles {
                 r.nodes += h.join().unwrap_or(0);
@@ -582,6 +595,7 @@ impl Searcher {
         max_depth: u32,
         budget: Duration,
         start: Instant,
+        depth_offset: u32,
     ) -> SearchResult {
         self.stopped = false;
         self.nodes = 0;
@@ -593,7 +607,7 @@ impl Searcher {
             elapsed: start.elapsed(),
         };
         let mut result = done(moves[0], 0, 0, 0);
-        for depth in 1..=max_depth {
+        for depth in (1 + depth_offset)..=max_depth.max(1 + depth_offset) {
             let mut alpha = -MATE * 2;
             let beta = MATE * 2;
             let mut iter_best: Option<(Move, i32)> = None;
