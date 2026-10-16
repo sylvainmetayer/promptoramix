@@ -61,7 +61,7 @@ L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le ban
 ## Intégration continue
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
-  (étiquettes `main` et `sha-…`) poussée à chaque push sur `main`, et contrôlée (`/health` puis un coup).
+  contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`.
 - `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
   (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).
 - Renovate tient les actions et les crates à jour.
