@@ -13,11 +13,20 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .map_or(default, |v| v.parse().expect("nombre attendu"))
     };
-    let record = args.first().filter(|a| !a.starts_with("--")).cloned().unwrap_or_default();
+    let record = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .unwrap_or_default();
     let pos = match parse_record(&record) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("notation refusée au coup {} ({}) : {}", e.index, e.token, e.reason.code());
+            eprintln!(
+                "notation refusée au coup {} ({}) : {}",
+                e.index,
+                e.token,
+                e.reason.code()
+            );
             std::process::exit(2);
         }
     };
@@ -35,7 +44,11 @@ fn main() {
                         p.legal_moves(&mut v);
                         let mut t: Vec<String> = v.into_iter().map(format_move).collect();
                         t.sort();
-                        format!("{} {}", if p.to_move == 0 { "blue" } else { "white" }, t.join(" "))
+                        format!(
+                            "{} {}",
+                            if p.to_move == 0 { "blue" } else { "white" },
+                            t.join(" ")
+                        )
                     }
                 },
             };
@@ -50,6 +63,12 @@ fn main() {
         eprintln!("aucun coup à jouer");
         std::process::exit(3);
     };
-    eprintln!("depth={} score={} nodes={} ms={}", r.depth, r.score, r.nodes, r.elapsed.as_millis());
+    eprintln!(
+        "depth={} score={} nodes={} ms={}",
+        r.depth,
+        r.score,
+        r.nodes,
+        r.elapsed.as_millis()
+    );
     println!("{}", format_move(r.best));
 }

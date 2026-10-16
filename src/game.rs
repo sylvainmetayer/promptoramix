@@ -57,7 +57,10 @@ pub struct Move {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Connection(usize),
-    Blocked { winner: Option<usize>, scores: [u32; 2] },
+    Blocked {
+        winner: Option<usize>,
+        scores: [u32; 2],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,7 +154,11 @@ impl Position {
             }
             for (oi, o) in orientations(shape).iter().enumerate() {
                 for col in 0..=(N - o.width) {
-                    let m = Move { shape: shape as u8, orient: oi as u8, col: col as u8 };
+                    let m = Move {
+                        shape: shape as u8,
+                        orient: oi as u8,
+                        col: col as u8,
+                    };
                     if drop_mask(&self.heights, m).is_ok() {
                         out.push(m);
                     }
@@ -171,7 +178,11 @@ impl Position {
             }
             for (oi, o) in orientations(shape).iter().enumerate() {
                 for col in 0..=(N - o.width) {
-                    let m = Move { shape: shape as u8, orient: oi as u8, col: col as u8 };
+                    let m = Move {
+                        shape: shape as u8,
+                        orient: oi as u8,
+                        col: col as u8,
+                    };
                     if drop_mask(&self.heights, m).is_ok() {
                         return true;
                     }
@@ -264,13 +275,22 @@ mod tests {
     use crate::pieces::orientation_index;
 
     fn mv(shape: usize, rot: u8, flip: bool, col: u8) -> Move {
-        Move { shape: shape as u8, orient: orientation_index(shape, rot, flip) as u8, col }
+        Move {
+            shape: shape as u8,
+            orient: orientation_index(shape, rot, flip) as u8,
+            col,
+        }
     }
 
     #[test]
     fn t_stem_down_on_flat_floor_is_unsupported() {
         let p = Position::new(BLUE);
-        assert_eq!(drop_mask(&p.heights, mv(5, 0, false, 0)).unwrap_err().code(), "unsupported");
+        assert_eq!(
+            drop_mask(&p.heights, mv(5, 0, false, 0))
+                .unwrap_err()
+                .code(),
+            "unsupported"
+        );
         assert!(drop_mask(&p.heights, mv(5, 2, false, 0)).is_ok());
         let t2 = &orientations(5)[orientation_index(5, 2, false)];
         assert_eq!(t2.cells, vec![(1, 0), (0, 1), (1, 1), (2, 1)]);
@@ -290,9 +310,15 @@ mod tests {
     #[test]
     fn horizontal_bounds_and_overflow() {
         let mut p = Position::new(BLUE);
-        assert_eq!(drop_mask(&p.heights, mv(2, 0, false, 7)), Err(Refusal::HorizontalBounds));
+        assert_eq!(
+            drop_mask(&p.heights, mv(2, 0, false, 7)),
+            Err(Refusal::HorizontalBounds)
+        );
         p.heights[4] = 8;
-        assert_eq!(drop_mask(&p.heights, mv(1, 1, false, 4)), Err(Refusal::Overflow));
+        assert_eq!(
+            drop_mask(&p.heights, mv(1, 1, false, 4)),
+            Err(Refusal::Overflow)
+        );
         p.heights[4] = 7;
         assert!(drop_mask(&p.heights, mv(1, 1, false, 4)).is_ok());
     }

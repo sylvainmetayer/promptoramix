@@ -32,12 +32,19 @@ fn signature_ok(secret: &str, headers: &HeaderMap, body: &[u8]) -> bool {
     let (Some(ts), Some(sig)) = (header("x-linkx-timestamp"), header("x-linkx-signature")) else {
         return false;
     };
-    let Ok(ts_value) = ts.parse::<i64>() else { return false };
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let Ok(ts_value) = ts.parse::<i64>() else {
+        return false;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     if (now - ts_value).abs() > MAX_CLOCK_SKEW_S {
         return false;
     }
-    let Some(Ok(expected)) = sig.strip_prefix("sha256=").map(hex::decode) else { return false };
+    let Some(Ok(expected)) = sig.strip_prefix("sha256=").map(hex::decode) else {
+        return false;
+    };
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(ts.as_bytes());
     mac.update(b".");
@@ -46,21 +53,32 @@ fn signature_ok(secret: &str, headers: &HeaderMap, body: &[u8]) -> bool {
 }
 
 fn threads() -> usize {
-    std::env::var("LINKX_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1).max(1)
+    std::env::var("LINKX_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1)
 }
 
 /// Temps de réflexion : une marge fixe pour le réseau, plafonné.
 fn budget(deadline_ms: u64) -> Duration {
-    let margin: u64 = std::env::var("LINKX_MARGIN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500);
+    let margin: u64 = std::env::var("LINKX_MARGIN_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1500);
     Duration::from_millis(deadline_ms.saturating_sub(margin).clamp(100, 5000))
 }
 
 async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
-    if let Ok(secret) = std::env::var("LINKX_SECRET") {
-        if !secret.is_empty() && !signature_ok(&secret, &headers, &body) {
-            eprintln!("signature refusée");
-            return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "signature" })));
-        }
+    if let Ok(secret) = std::env::var("LINKX_SECRET")
+        && !secret.is_empty()
+        && !signature_ok(&secret, &headers, &body)
+    {
+        eprintln!("signature refusée");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "signature" })),
+        );
     }
     let Ok(req) = serde_json::from_slice::<MoveRequest>(&body) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "json" })));
@@ -68,19 +86,34 @@ async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     // Les passes sont facultatives à la lecture : en cas de passe inattendue,
     // on rejoue sans elles plutôt que d'abandonner.
     let lenient = || {
-        let stripped: Vec<&str> = req.record.split_whitespace().filter(|t| *t != "--").collect();
+        let stripped: Vec<&str> = req
+            .record
+            .split_whitespace()
+            .filter(|t| *t != "--")
+            .collect();
         parse_record(&stripped.join(" "))
     };
     let pos = match parse_record(&req.record).or_else(|_| lenient()) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[{}] notation refusée au coup {} : {}", req.game, e.index, e.reason.code());
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e.reason.code() })));
+            eprintln!(
+                "[{}] notation refusée au coup {} : {}",
+                req.game,
+                e.index,
+                e.reason.code()
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": e.reason.code() })),
+            );
         }
     };
     let expected = if pos.to_move == 0 { "blue" } else { "white" };
     if !req.color.is_empty() && req.color != expected {
-        eprintln!("[{}] couleur annoncée {} mais {} au trait", req.game, req.color, expected);
+        eprintln!(
+            "[{}] couleur annoncée {} mais {} au trait",
+            req.game, req.color, expected
+        );
     }
     let time = budget(req.deadline_ms.unwrap_or(6000));
     let result = tokio::task::spawn_blocking(move || {
@@ -89,19 +122,35 @@ async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
         searcher.options.threads = threads();
         searcher.search(&pos, time, 64)
     })
-        .await
-        .ok()
-        .flatten();
+    .await
+    .ok()
+    .flatten();
     match result {
         Some(r) => {
             let mv = format_move(r.best);
             eprintln!(
                 "[{}] {} « {} » -> {mv} (prof. {}, score {}, {} nœuds, {} ms)",
-                req.game, expected, req.record, r.depth, r.score, r.nodes, r.elapsed.as_millis()
+                req.game,
+                expected,
+                req.record,
+                r.depth,
+                r.score,
+                r.nodes,
+                r.elapsed.as_millis()
             );
             (StatusCode::OK, Json(json!({ "move": mv })))
         }
         None => (StatusCode::CONFLICT, Json(json!({ "error": "no-move" }))),
+    }
+}
+
+/// PID 1 d'un conteneur : sans gestionnaire, SIGTERM est ignoré.
+async fn shutdown() {
+    let mut term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
     }
 }
 
@@ -113,9 +162,14 @@ async fn main() {
     let app = Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
         .fallback(axum::routing::post(play));
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
-    eprintln!("linkx-bot à l'écoute sur :{port}");
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .unwrap();
+    eprintln!("Promptoramix à l'écoute sur :{port}");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown())
+        .await
+        .unwrap();
 }
 
 #[cfg(test)]
@@ -138,11 +192,31 @@ mod tests {
 
     #[test]
     fn signature_round_trip() {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs().to_string();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
         let body = br#"{"record":""}"#;
-        assert!(signature_ok("s3cret", &headers(&ts, &sign("s3cret", &ts, body)), body));
-        assert!(!signature_ok("other", &headers(&ts, &sign("s3cret", &ts, body)), body));
-        assert!(!signature_ok("s3cret", &headers(&ts, &sign("s3cret", &ts, body)), b"{}"));
-        assert!(!signature_ok("s3cret", &headers("1000", &sign("s3cret", "1000", body)), body));
+        assert!(signature_ok(
+            "s3cret",
+            &headers(&ts, &sign("s3cret", &ts, body)),
+            body
+        ));
+        assert!(!signature_ok(
+            "other",
+            &headers(&ts, &sign("s3cret", &ts, body)),
+            body
+        ));
+        assert!(!signature_ok(
+            "s3cret",
+            &headers(&ts, &sign("s3cret", &ts, body)),
+            b"{}"
+        ));
+        assert!(!signature_ok(
+            "s3cret",
+            &headers("1000", &sign("s3cret", "1000", body)),
+            body
+        ));
     }
 }

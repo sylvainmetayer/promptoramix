@@ -1,4 +1,18 @@
-# linkx-bot
+# Promptoramix — IA du tournoi Linkx
+
+[![CI](https://github.com/sylvainmetayer/promptoramix/actions/workflows/ci.yml/badge.svg)](https://github.com/sylvainmetayer/promptoramix/actions/workflows/ci.yml)
+[![Qualité](https://github.com/sylvainmetayer/promptoramix/actions/workflows/quality.yml/badge.svg)](https://github.com/sylvainmetayer/promptoramix/actions/workflows/quality.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_promptoramix&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_promptoramix)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_promptoramix&metric=coverage)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_promptoramix)
+[![Maintainability](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_promptoramix&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_promptoramix)
+[![Reliability](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_promptoramix&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_promptoramix)
+[![Security](https://sonarcloud.io/api/project_badges/measure?project=sylvainmetayer_promptoramix&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=sylvainmetayer_promptoramix)
+
+[![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)](https://www.rust-lang.org/)
+[![Image](https://img.shields.io/badge/ghcr.io-promptoramix-blue?logo=docker)](https://github.com/sylvainmetayer/promptoramix/pkgs/container/promptoramix)
+[![Linkx](https://img.shields.io/badge/tournoi-Linkx-8a2be2)](https://marmelab.com/linkx/#/classement)
+
+Le druide qui fait sortir la potion magique d'un simple prompt.
 
 IA pour le [tournoi Linkx](https://marmelab.com/linkx/) de Marmelab, écrite en Rust from scratch :
 règles et notation réimplémentées, recherche alpha-bêta à approfondissement itératif.
@@ -43,8 +57,19 @@ node duel.ts --games 34 --openings --ours-ms 4500 --house-ms 900
 
 L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le banc la reproduit.
 
+## Intégration continue
+
+- `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
+  (étiquettes `main` et `sha-…`) poussée à chaque push sur `main`, et contrôlée (`/health` puis un coup).
+- `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
+  (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).
+- Renovate tient les actions et les crates à jour.
+
 ## Déploiement
 
-`docker build -t linkx-bot . && docker run -p 8080:8080 -e LINKX_SECRET=… linkx-bot`,
-derrière un HTTPS public sur le port 443 (exigence de la plateforme). Un cœur par requête,
-deux requêtes simultanées au plus : prévoir 2 vCPU.
+Sur le serveur `flip` du homelab (rôle Ansible `promptoramix`), derrière Pangolin :
+<https://promptoramix.sylvain.cloud>. Le secret de la plateforme est dans SOPS
+(`promptoramix_linkx_secret`) et arrive au conteneur en `LINKX_SECRET`. Renovate y suit le digest
+de `:main` et fusionne automatiquement : chaque push sur `main` part en production.
+
+En local : `docker run -p 8080:8080 -e LINKX_SECRET=… ghcr.io/sylvainmetayer/promptoramix:main`.

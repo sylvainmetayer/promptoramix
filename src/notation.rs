@@ -42,7 +42,11 @@ pub fn parse_move(token: &str) -> Result<Move, Refusal> {
         Some(c @ b'1'..=b'9') if i + 1 == b.len() => c - b'1',
         _ => return Err(Refusal::Syntax),
     };
-    Ok(Move { shape, orient: orientation_index(shape as usize, rotation, flipped) as u8, col })
+    Ok(Move {
+        shape,
+        orient: orientation_index(shape as usize, rotation, flipped) as u8,
+        col,
+    })
 }
 
 pub fn format_move(m: Move) -> String {
@@ -76,7 +80,11 @@ pub fn parse_record(source: &str) -> Result<Position, RecordError> {
     let mut pos = Position::new(first.unwrap_or(BLUE));
     let mut pending_pass = false;
     for (n, token) in tokens.enumerate() {
-        let err = |reason| RecordError { index: n + 1, token: token.to_string(), reason };
+        let err = |reason| RecordError {
+            index: n + 1,
+            token: token.to_string(),
+            reason,
+        };
         if token == "--" {
             if !pending_pass || pos.outcome.is_some() {
                 return Err(err(Refusal::UnexpectedPass));
@@ -106,11 +114,19 @@ mod tests {
             vec!["3L1", "3Lr11", "3Lr21", "3Lr31"],
             vec!["4S1", "4Sr11", "4Ss1", "4Ssr11"],
             vec!["4T1", "4Tr11", "4Tr21", "4Tr31"],
-            vec!["4L1", "4Lr11", "4Lr21", "4Lr31", "4Ls1", "4Lsr11", "4Lsr21", "4Lsr31"],
+            vec![
+                "4L1", "4Lr11", "4Lr21", "4Lr31", "4Ls1", "4Lsr11", "4Lsr21", "4Lsr31",
+            ],
         ];
         for (shape, tokens) in expected.iter().enumerate() {
             let got: Vec<String> = (0..orientations(shape).len())
-                .map(|o| format_move(Move { shape: shape as u8, orient: o as u8, col: 0 }))
+                .map(|o| {
+                    format_move(Move {
+                        shape: shape as u8,
+                        orient: o as u8,
+                        col: 0,
+                    })
+                })
                 .collect();
             assert_eq!(&got, tokens);
         }
@@ -128,13 +144,19 @@ mod tests {
             ("4lsr27", "4Lsr27"),
             (" 3Ir13 ", "3Ir13"),
         ] {
-            assert_eq!(format_move(parse_move(input).unwrap()), canonical, "{input}");
+            assert_eq!(
+                format_move(parse_move(input).unwrap()),
+                canonical,
+                "{input}"
+            );
         }
     }
 
     #[test]
     fn syntax_errors() {
-        for bad in ["", "--", "10", "5", "3x4", "4L", "4Lr4", "4Lr02", "15 16", "4Lr1", "1r", "4L10"] {
+        for bad in [
+            "", "--", "10", "5", "3x4", "4L", "4Lr4", "4Lr02", "15 16", "4Lr1", "1r", "4L10",
+        ] {
             assert_eq!(parse_move(bad), Err(Refusal::Syntax), "{bad}");
         }
     }

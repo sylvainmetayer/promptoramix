@@ -78,7 +78,16 @@ fn build(cells: Cells, rotation: u8, flipped: bool) -> Orientation {
         col_bottom[x] = col_bottom[x].max(y as u8);
         mask |= 1u128 << (y * 9 + x);
     }
-    Orientation { cells, width, height, rotation, flipped, col_top, col_bottom, mask }
+    Orientation {
+        cells,
+        width,
+        height,
+        rotation,
+        flipped,
+        col_top,
+        col_bottom,
+        mask,
+    }
 }
 
 fn compute() -> Vec<Vec<Orientation>> {
@@ -106,7 +115,10 @@ pub fn orientations(shape: usize) -> &'static [Orientation] {
 /// Indice de l'orientation distincte qui a cette géométrie.
 pub fn orientation_index(shape: usize, rotation: u8, flipped: bool) -> usize {
     let cells = transform(shape, rotation % 4, flipped);
-    orientations(shape).iter().position(|o| o.cells == cells).unwrap()
+    orientations(shape)
+        .iter()
+        .position(|o| o.cells == cells)
+        .unwrap()
 }
 
 #[cfg(test)]
@@ -121,8 +133,8 @@ mod tests {
 
     #[test]
     fn sizes_and_totals() {
-        for s in 0..SHAPES {
-            assert_eq!(base_cells(s).len() as u32, SHAPE_SIZES[s]);
+        for (s, &size) in SHAPE_SIZES.iter().enumerate() {
+            assert_eq!(base_cells(s).len() as u32, size);
         }
         assert_eq!(SHAPE_SIZES.iter().sum::<u32>() * 2, 42);
     }
