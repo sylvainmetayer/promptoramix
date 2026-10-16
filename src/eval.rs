@@ -21,6 +21,8 @@ pub struct Weights {
     pub narrow_none: i32,
     /// Puits profonds infranchissables sans pièce étroite.
     pub deep_wells: bool,
+    /// Le grand L comble un puits de deux cases.
+    pub wells3: bool,
 }
 
 pub const DEFAULT_WEIGHTS: Weights = Weights {
@@ -33,6 +35,7 @@ pub const DEFAULT_WEIGHTS: Weights = Weights {
     narrow_ok: 0,
     narrow_none: 0,
     deep_wells: true,
+    wells3: false,
 };
 
 pub const UNREACHABLE: i32 = 400;
@@ -64,8 +67,14 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
         w.narrow_none
     };
     // Puits d'au moins deux cases de profondeur : sans pièce étroite, rien ne
-    // peut plus y descendre, la case est perdue pour ce joueur.
+    // peut plus y descendre, la case est perdue pour ce joueur. Sauf le grand
+    // L, dont la branche de trois descend dans un puits de deux, le bras posé
+    // sur le voisin : avec un grand L en réserve, seuls les puits de trois
+    // cases et plus sont perdus.
     let mut deep = narrow & (narrow << N);
+    if w.wells3 && pos.inv[p][6] > 0 {
+        deep &= narrow << (2 * N);
+    }
     for _ in 0..N {
         deep |= (deep >> N) & !occ;
     }
@@ -89,34 +98,48 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     let costs: [i32; K] = std::array::from_fn(|k| {
         w.empty + w.gap * (k % N) as i32 + if k >= N { narrow_cost } else { 0 }
     });
-    let lr = shortest(own, blocked, &classes, &costs, COL_FIRST, COL_LAST);
-    let tb = shortest(own, blocked, &classes, &costs, ROW_FIRST, ROW_LAST);
+    // Seules les classes non vides et non bloquées comptent dans la boucle.
+    let mut active = [(0u128, 0usize); K];
+    let mut n = 0;
+    for k in 0..K {
+        let cells = classes[k] & !blocked;
+        if cells != 0 {
+            active[n] = (cells, (costs[k].max(0) as usize).min(RING - 1));
+            n += 1;
+        }
+    }
+    let active = &active[..n];
+    let lr = shortest(own, blocked, active, COL_FIRST, COL_LAST);
+    let tb = shortest(own, blocked, active, ROW_FIRST, ROW_LAST);
     (lr, tb)
 }
 
-const BUCKETS: usize = UNREACHABLE as usize + 64;
+/// File de Dial circulaire : tout coût d'arête est inférieur à `RING`, donc
+/// une case n'écrase jamais un seau pas encore traité.
+const RING: usize = 64;
 
 const K: usize = 2 * N;
 
-fn shortest(
-    own: u128,
-    blocked: u128,
-    classes: &[u128; K],
-    costs: &[i32; K],
-    start: u128,
-    goal: u128,
-) -> i32 {
-    let mut buckets = [0u128; BUCKETS];
-    buckets[0] = start & own;
-    for g in 0..K {
-        let c = costs[g] as usize;
-        if c < BUCKETS {
-            buckets[c] |= start & classes[g];
+fn shortest(own: u128, blocked: u128, active: &[(u128, usize)], start: u128, goal: u128) -> i32 {
+    let mut ring = [0u128; RING];
+    let mut pending = 0u64;
+    let push = |ring: &mut [u128; RING], pending: &mut u64, at: usize, cells: u128| {
+        if cells != 0 {
+            ring[at % RING] |= cells;
+            *pending |= 1 << (at % RING);
         }
+    };
+    push(&mut ring, &mut pending, 0, start & own);
+    for &(cells, step) in active {
+        push(&mut ring, &mut pending, step, start & cells);
     }
     let mut settled = blocked;
-    for d in 0..UNREACHABLE as usize {
-        let mut cur = buckets[d] & !settled;
+    let mut d = 0usize;
+    while pending != 0 && d < UNREACHABLE as usize {
+        d += pending.rotate_right((d % RING) as u32).trailing_zeros() as usize;
+        let slot = d % RING;
+        pending &= !(1 << slot);
+        let mut cur = std::mem::take(&mut ring[slot]) & !settled;
         if cur == 0 {
             continue;
         }
@@ -128,18 +151,12 @@ fn shortest(
             cur = next;
         }
         if cur & goal != 0 {
-            return d as i32;
+            return (d as i32).min(UNREACHABLE);
         }
         settled |= cur;
         let frontier = spread(cur) & !settled;
-        for g in 0..K {
-            let reach = frontier & classes[g];
-            if reach != 0 {
-                let nd = d + costs[g] as usize;
-                if nd < BUCKETS {
-                    buckets[nd] |= reach;
-                }
-            }
+        for &(cells, step) in active {
+            push(&mut ring, &mut pending, d + step, frontier & cells);
         }
     }
     UNREACHABLE
