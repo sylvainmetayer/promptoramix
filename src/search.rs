@@ -1,7 +1,7 @@
 //! Recherche alpha-bêta à approfondissement itératif, bornée dans le temps.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
@@ -90,56 +90,10 @@ const EXACT: u8 = 0;
 const LOWER: u8 = 1;
 const UPPER: u8 = 2;
 
-struct Zobrist {
-    cells: [[u64; 81]; 2],
-    inv: [[[u64; 3]; SHAPES]; 2],
-    side: u64,
-}
-
-fn zobrist() -> &'static Zobrist {
-    static Z: OnceLock<Zobrist> = OnceLock::new();
-    Z.get_or_init(|| {
-        let mut s = 0x9E37_79B9_7F4A_7C15u64;
-        let mut next = || {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            s
-        };
-        let mut z = Zobrist {
-            cells: [[0; 81]; 2],
-            inv: [[[0; 3]; SHAPES]; 2],
-            side: 0,
-        };
-        for p in 0..2 {
-            for i in 0..81 {
-                z.cells[p][i] = next();
-            }
-            for sh in 0..SHAPES {
-                for c in 0..3 {
-                    z.inv[p][sh][c] = next();
-                }
-            }
-        }
-        z.side = next();
-        z
-    })
-}
-
+/// Empreinte Zobrist, tenue à jour par la position elle-même.
+#[inline]
 pub fn hash(pos: &Position) -> u64 {
-    let z = zobrist();
-    let mut h = if pos.to_move == 1 { z.side } else { 0 };
-    for p in 0..2 {
-        let mut b = pos.bb[p];
-        while b != 0 {
-            h ^= z.cells[p][b.trailing_zeros() as usize];
-            b &= b - 1;
-        }
-        for sh in 0..SHAPES {
-            h ^= z.inv[p][sh][pos.inv[p][sh] as usize];
-        }
-    }
-    h
+    pos.key
 }
 
 /// Les scores de mat comptent les demi-coups depuis la racine ; la table les
@@ -205,6 +159,8 @@ pub struct Searcher {
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub lmr: bool,
+    /// Ne pas réduire les coups de pièces étroites (mono, domino, barre).
+    pub lmr_spare_narrow: bool,
     pub eval_order: bool,
     /// Profondeur restante minimale pour ordonner par évaluation statique.
     pub eval_order_depth: i32,
@@ -222,10 +178,13 @@ pub struct Options {
 
 pub const DEFAULT_OPTIONS: Options = Options {
     lmr: true,
+    lmr_spare_narrow: false,
     eval_order: true,
     eval_order_depth: 3,
     threat_extension: false,
-    book: true,
+    // Désactivé : contre la maison, 44–22 avec le livre, 50–16 sans (68 parties),
+    // des débuts figés qu'elle exploite jusqu'au blocage.
+    book: false,
     eval_cache: true,
     stop_early: false,
     threads: 1,
@@ -272,6 +231,11 @@ impl Searcher {
                 "book" => s.options.book = n != 0,
                 "ecache" => s.options.eval_cache = n != 0,
                 "wells3" => w.wells3 = n != 0,
+                "cliff" => w.cliff = n != 0,
+                "lmrn" => s.options.lmr_spare_narrow = n != 0,
+                "nkeep" => w.narrow_keep = n,
+                "zphase" => w.zone_phase = n != 0,
+                "vstep" => w.vstep = n != 0,
                 "early" => s.options.stop_early = n != 0,
                 "threads" => s.options.threads = n.max(1) as usize,
                 _ => panic!("clé inconnue {k}"),
@@ -413,15 +377,19 @@ impl Searcher {
 
         self.order(&mut moves, tt_move, ply);
         let killers = self.killers[ply.min(MAX_PLY - 1)];
-        let mut children: Vec<(Move, Position)> = moves
-            .iter()
-            .map(|&m| {
-                let mut c = *pos;
-                c.play(m).unwrap();
-                (m, c)
-            })
-            .collect();
-        if self.options.eval_order && depth >= self.options.eval_order_depth {
+        // Sans tri par évaluation, les enfants sont joués à la demande : une
+        // coupure dès les premiers coups évite de jouer tous les autres.
+        let sort_by_eval = self.options.eval_order && depth >= self.options.eval_order_depth;
+        let mut children: Vec<(Move, Position)> = Vec::new();
+        if sort_by_eval {
+            children = moves
+                .iter()
+                .map(|&m| {
+                    let mut c = *pos;
+                    c.play(m).unwrap();
+                    (m, c)
+                })
+                .collect();
             // Le coup de la table reste en tête ; les autres, par évaluation statique.
             let skip = usize::from(tt_move.is_some());
             let p = pos.to_move;
@@ -445,8 +413,15 @@ impl Searcher {
         let alpha0 = alpha;
         let mut best = -MATE * 2;
         let mut best_move = moves[0];
-        for (i, (m, child)) in children.iter().enumerate() {
-            let m = *m;
+        for i in 0..moves.len() {
+            let (m, child) = if sort_by_eval {
+                children[i]
+            } else {
+                let mut c = *pos;
+                c.play(moves[i]).unwrap();
+                (moves[i], c)
+            };
+            let child = &child;
             let same = child.to_move == pos.to_move;
             let search = |s: &mut Self, d: i32, a: i32, b: i32| {
                 if same {
@@ -456,7 +431,11 @@ impl Searcher {
                 }
             };
             let quiet = Some(m) != tt_move && Some(m) != killers[0] && Some(m) != killers[1];
-            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet {
+            // Les victoires forcées manquées passaient surtout par un domino ou
+            // une barre, rangés tard puis réduits : on les cherche en entier.
+            let narrow_piece =
+                self.options.lmr_spare_narrow && (m.shape as usize) < crate::eval::NARROW_SHAPES;
+            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet && !narrow_piece {
                 if i >= 12 { 2 } else { 1 }
             } else {
                 0
@@ -559,12 +538,14 @@ impl Searcher {
                     let len = root.len();
                     root.rotate_left(i * 7 % len);
                     scope.spawn(move || {
-                        h.iterate(pos, root, max_depth, budget, start);
+                        // Un auxiliaire sur deux cherche un cran plus profond que
+                        // le fil principal : il remplit la table en avance.
+                        h.iterate(pos, root, max_depth, budget, start, (i % 2) as u32);
                         h.nodes
                     })
                 })
                 .collect();
-            let mut r = self.iterate(pos, moves, max_depth, budget, start);
+            let mut r = self.iterate(pos, moves, max_depth, budget, start, 0);
             self.stop.store(true, Relaxed);
             for h in handles {
                 r.nodes += h.join().unwrap_or(0);
@@ -582,6 +563,7 @@ impl Searcher {
         max_depth: u32,
         budget: Duration,
         start: Instant,
+        depth_offset: u32,
     ) -> SearchResult {
         self.stopped = false;
         self.nodes = 0;
@@ -593,7 +575,10 @@ impl Searcher {
             elapsed: start.elapsed(),
         };
         let mut result = done(moves[0], 0, 0, 0);
-        for depth in 1..=max_depth {
+        // Le décalage ne fait jamais dépasser `max_depth` ni sauter toute
+        // itération ; `max_depth == 0` ne cherche rien, comme avant.
+        let first = (1 + depth_offset).min(max_depth.max(1));
+        for depth in first..=max_depth {
             let mut alpha = -MATE * 2;
             let beta = MATE * 2;
             let mut iter_best: Option<(Move, i32)> = None;

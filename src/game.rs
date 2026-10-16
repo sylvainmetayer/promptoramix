@@ -1,5 +1,7 @@
 //! Position, coups légaux, chute, connexion et fin de partie.
 
+use std::sync::OnceLock;
+
 use crate::pieces::{SHAPES, orientations};
 
 pub const N: usize = 9;
@@ -66,6 +68,8 @@ pub enum Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub bb: [u128; 2],
+    /// Empreinte Zobrist de la position (`full_hash`), mise à jour à chaque pose.
+    pub key: u64,
     pub heights: [u8; N],
     pub inv: [[u8; SHAPES]; 2],
     pub to_move: usize,
@@ -131,15 +135,71 @@ pub fn largest_zone(own: u128) -> u32 {
     best
 }
 
+pub(crate) struct Zobrist {
+    cells: [[u64; 81]; 2],
+    inv: [[[u64; 3]; SHAPES]; 2],
+    side: u64,
+}
+
+pub(crate) fn zobrist() -> &'static Zobrist {
+    static Z: OnceLock<Zobrist> = OnceLock::new();
+    Z.get_or_init(|| {
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        let mut z = Zobrist {
+            cells: [[0; 81]; 2],
+            inv: [[[0; 3]; SHAPES]; 2],
+            side: 0,
+        };
+        for p in 0..2 {
+            for i in 0..81 {
+                z.cells[p][i] = next();
+            }
+            for sh in 0..SHAPES {
+                for c in 0..3 {
+                    z.inv[p][sh][c] = next();
+                }
+            }
+        }
+        z.side = next();
+        z
+    })
+}
+
+/// Empreinte calculée de zéro ; `Position::key` la tient à jour.
+pub fn full_hash(pos: &Position) -> u64 {
+    let z = zobrist();
+    let mut h = if pos.to_move == 1 { z.side } else { 0 };
+    for p in 0..2 {
+        let mut b = pos.bb[p];
+        while b != 0 {
+            h ^= z.cells[p][b.trailing_zeros() as usize];
+            b &= b - 1;
+        }
+        for sh in 0..SHAPES {
+            h ^= z.inv[p][sh][pos.inv[p][sh] as usize];
+        }
+    }
+    h
+}
+
 impl Position {
     pub fn new(first: usize) -> Self {
-        Position {
+        let mut pos = Position {
             bb: [0, 0],
+            key: 0,
             heights: [0; N],
             inv: [[2; SHAPES]; 2],
             to_move: first,
             outcome: None,
-        }
+        };
+        pos.key = full_hash(&pos);
+        pos
     }
 
     pub fn occupied(&self) -> u128 {
@@ -210,6 +270,14 @@ impl Position {
     /// Pose sans contrôle : `added` vient de `drop_mask`.
     #[inline]
     pub fn place(&mut self, p: usize, shape: usize, added: u128) {
+        let z = zobrist();
+        let count = self.inv[p][shape] as usize;
+        self.key ^= z.inv[p][shape][count] ^ z.inv[p][shape][count - 1];
+        let mut cells = added;
+        while cells != 0 {
+            self.key ^= z.cells[p][cells.trailing_zeros() as usize];
+            cells &= cells - 1;
+        }
         self.inv[p][shape] -= 1;
         self.bb[p] |= added;
         let occ = self.occupied();
@@ -223,14 +291,21 @@ impl Position {
         }
     }
 
+    fn set_to_move(&mut self, player: usize) {
+        if self.to_move != player {
+            self.key ^= zobrist().side;
+            self.to_move = player;
+        }
+    }
+
     pub fn advance(&mut self, p: usize, added: u128) {
         let q = 1 - p;
         if spans(flood(added, self.bb[p])) {
             self.outcome = Some(Outcome::Connection(p));
         } else if self.has_move(q) {
-            self.to_move = q;
+            self.set_to_move(q);
         } else if self.has_move(p) {
-            self.to_move = p;
+            self.set_to_move(p);
         } else {
             let scores = [largest_zone(self.bb[0]), largest_zone(self.bb[1])];
             let winner = match scores[0].cmp(&scores[1]) {
@@ -338,6 +413,26 @@ mod tests {
     fn spread_does_not_wrap_rows() {
         assert_eq!(spread(1u128 << 8) & (1u128 << 9), 0);
         assert_eq!(spread(1u128 << 9) & (1u128 << 8), 0);
+    }
+
+    #[test]
+    fn incremental_key_matches_full_hash() {
+        let mut seed = 0x1234_5678_9ABC_DEF1u64;
+        let mut moves = Vec::new();
+        for first in [BLUE, WHITE] {
+            for _ in 0..40 {
+                let mut p = Position::new(first);
+                while p.outcome.is_none() {
+                    assert_eq!(p.key, full_hash(&p));
+                    p.legal_moves(&mut moves);
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    p.play(moves[(seed % moves.len() as u64) as usize]).unwrap();
+                }
+                assert_eq!(p.key, full_hash(&p));
+            }
+        }
     }
 
     #[test]
