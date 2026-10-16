@@ -64,11 +64,23 @@ pub fn format_move(m: Move) -> String {
 }
 
 /// Rejoue une notation depuis une partie vierge.
-pub fn parse_record(source: &str) -> Result<Position, RecordError> {
-    let mut tokens = source
+fn tokens(source: &str) -> impl Iterator<Item = &str> {
+    source
         .split(|c: char| c.is_whitespace() || c == ',' || c == '+')
         .filter(|t| !t.is_empty())
-        .peekable();
+}
+
+/// Comme `parse_record`, mais une passe refusée est ignorée plutôt que fatale :
+/// les passes sont de toute façon déduites de la position.
+pub fn parse_record_lenient(source: &str) -> Result<Position, RecordError> {
+    parse_record(source).or_else(|_| {
+        let kept: Vec<&str> = tokens(source).filter(|t| *t != "--").collect();
+        parse_record(&kept.join(" "))
+    })
+}
+
+pub fn parse_record(source: &str) -> Result<Position, RecordError> {
+    let mut tokens = tokens(source).peekable();
     let first = match tokens.peek().map(|t| t.to_ascii_lowercase()) {
         Some(t) if t == "b" || t == "blue" => Some(BLUE),
         Some(t) if t == "w" || t == "white" => Some(WHITE),
@@ -181,6 +193,15 @@ mod tests {
         assert_eq!((e.index, e.reason), (2, Refusal::UnexpectedPass));
         let e = parse_record("4T1").unwrap_err();
         assert_eq!(e.reason, Refusal::Unsupported);
+    }
+
+    #[test]
+    fn omitted_and_spurious_passes() {
+        // Une passe que la position ne justifie pas est refusée en lecture stricte,
+        // ignorée en lecture souple, quels que soient les séparateurs.
+        assert!(parse_record("15,--,16").is_err());
+        let lenient = parse_record_lenient("15,--+16").unwrap();
+        assert_eq!(lenient, parse_record("15 16").unwrap());
     }
 
     #[test]

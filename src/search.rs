@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
-use crate::game::{Move, Position, drop_mask, flood, spans, spread};
+use crate::game::{Move, Position, drop_mask, flood, lowest_bit, spans, spread};
 use crate::pieces::{SHAPES, orientations};
 
 pub const MATE: i32 = 1_000_000;
@@ -248,7 +248,7 @@ impl Searcher {
         let mut count = 0;
         let mut rest = own;
         while rest != 0 {
-            let z = flood(rest & rest.wrapping_neg(), own);
+            let z = flood(lowest_bit(rest), own);
             zones[count] = z;
             count += 1;
             rest &= !z;
@@ -401,8 +401,10 @@ impl Searcher {
                     k[1] = k[0];
                     k[0] = Some(m);
                 }
-                self.history[m.shape as usize][m.orient as usize][m.col as usize] +=
-                    (depth * depth) as u32;
+                {
+                    let h = &mut self.history[m.shape as usize][m.orient as usize][m.col as usize];
+                    *h = h.saturating_add((depth * depth) as u32);
+                }
                 break;
             }
         }

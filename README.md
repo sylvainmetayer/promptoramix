@@ -40,7 +40,8 @@ PORT=8080 LINKX_SECRET=… cargo run --release --bin linkx-server
 curl -s localhost:8080/ -d '{"protocol":1,"game":"x","color":"blue","record":"","deadline_ms":6000}'
 ```
 
-Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, signature vérifiée, sinon 401),
+Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signature invalide reçoit un 401 ;
+absente, aucune vérification),
 `LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
 (réglages `clé=valeur,…` de l'évaluation, pour les essais).
