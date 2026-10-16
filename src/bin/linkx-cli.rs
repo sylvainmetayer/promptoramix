@@ -21,6 +21,28 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.iter().any(|a| a == "--legal") {
+        // Une ligne par notation lue sur stdin : coups légaux triés, ou issue.
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines() {
+            let line = line.unwrap();
+            let out = match parse_record(&line) {
+                Err(e) => format!("error {} {}", e.index, e.reason.code()),
+                Ok(p) => match p.outcome {
+                    Some(_) => format!("finished {:?}", p.winner()),
+                    None => {
+                        let mut v = Vec::new();
+                        p.legal_moves(&mut v);
+                        let mut t: Vec<String> = v.into_iter().map(format_move).collect();
+                        t.sort();
+                        format!("{} {}", if p.to_move == 0 { "blue" } else { "white" }, t.join(" "))
+                    }
+                },
+            };
+            println!("{out}");
+        }
+        return;
+    }
     let mut searcher = Searcher::new(flag("--tt", 22) as u32);
     let budget = Duration::from_millis(flag("--ms", 4500));
     let Some(r) = searcher.search(&pos, budget, flag("--depth", 64) as u32) else {

@@ -61,7 +61,13 @@ async fn play(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
     let Ok(req) = serde_json::from_slice::<MoveRequest>(&body) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "json" })));
     };
-    let pos = match parse_record(&req.record) {
+    // Les passes sont facultatives à la lecture : en cas de passe inattendue,
+    // on rejoue sans elles plutôt que d'abandonner.
+    let lenient = || {
+        let stripped: Vec<&str> = req.record.split_whitespace().filter(|t| *t != "--").collect();
+        parse_record(&stripped.join(" "))
+    };
+    let pos = match parse_record(&req.record).or_else(|_| lenient()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[{}] notation refusée au coup {} : {}", req.game, e.index, e.reason.code());
