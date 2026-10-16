@@ -44,7 +44,9 @@ Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signatu
 absente, aucune vérification),
 `LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
-(réglages `clé=valeur,…` de l'évaluation, pour les essais).
+(réglages `clé=valeur,…` de l'évaluation, pour les essais), `LINKX_GAMES` (3 : parties dont la
+recherche est gardée d'un appel à l'autre, 0 pour repartir de zéro à chaque coup), `LINKX_PONDER`
+(1 : réflexion pendant le tour adverse, 0 pour la couper).
 
 ## Banc de duel
 

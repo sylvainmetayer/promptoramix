@@ -33,7 +33,27 @@ pub struct Weights {
     pub narrow_keep: i32,
 }
 
+/// Ajustés par la méthode Texel (`examples/tune.rs`) sur 27 000 positions
+/// d'autoduel : 63,7 % puis 66,5 % contre les anciens poids (234 parties).
 pub const DEFAULT_WEIGHTS: Weights = Weights {
+    empty: 4,
+    gap: 1,
+    distance: 51,
+    second_axis: 16,
+    zone: 297,
+    tempo: 188,
+    narrow_ok: 5,
+    narrow_none: 20,
+    deep_wells: true,
+    wells3: true,
+    cliff: true,
+    zone_phase: true,
+    vstep: true,
+    narrow_keep: 300,
+};
+
+/// Poids d'avant l'ajustement : référence des tests qui isolent une option.
+pub const HAND_WEIGHTS: Weights = Weights {
     empty: 4,
     gap: 3,
     distance: 40,
@@ -275,8 +295,8 @@ mod tests {
     #[test]
     fn empty_board_distances_are_symmetric() {
         let pos = Position::new(BLUE);
-        let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
-        assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
+        let (lr, tb) = distances(&pos, BLUE, &HAND_WEIGHTS);
+        assert_eq!(lr, 9 * HAND_WEIGHTS.empty);
         assert!(tb > lr);
     }
 
@@ -295,7 +315,7 @@ mod tests {
             BLUE,
             &Weights {
                 deep_wells: false,
-                ..DEFAULT_WEIGHTS
+                ..HAND_WEIGHTS
             },
         );
         let aware = distances(
@@ -303,7 +323,7 @@ mod tests {
             BLUE,
             &Weights {
                 deep_wells: true,
-                ..DEFAULT_WEIGHTS
+                ..HAND_WEIGHTS
             },
         );
         assert!(naive.0 < UNREACHABLE && naive.1 < UNREACHABLE);
@@ -315,7 +335,7 @@ mod tests {
         let pos = Position::new(BLUE);
         let w = Weights {
             vstep: true,
-            ..DEFAULT_WEIGHTS
+            ..HAND_WEIGHTS
         };
         let (lr, tb) = distances(&pos, BLUE, &w);
         assert_eq!(lr, 9 * w.empty);
@@ -327,21 +347,21 @@ mod tests {
         // Bleu tient le fond de la colonne 1 à la colonne 6 : son axe gauche-droite
         // est court, l'axe haut-bas lointain.
         let pos = parse_record("3I1 11 3I4 12").unwrap();
-        let plain = connection_score(&pos, BLUE, &DEFAULT_WEIGHTS);
+        let plain = connection_score(&pos, BLUE, &HAND_WEIGHTS);
         let capped = connection_score(
             &pos,
             BLUE,
             &Weights {
                 cliff: true,
-                ..DEFAULT_WEIGHTS
+                ..HAND_WEIGHTS
             },
         );
         assert!(capped.0 <= plain.0);
-        let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
+        let (lr, tb) = distances(&pos, BLUE, &HAND_WEIGHTS);
         let (best, other) = (lr.min(tb), lr.max(tb));
         assert_eq!(
             capped.0,
-            best * 16 + other.min(best + 60) * DEFAULT_WEIGHTS.second_axis
+            best * 16 + other.min(best + 60) * HAND_WEIGHTS.second_axis
         );
         assert_eq!(capped.1, plain.1);
     }
@@ -351,19 +371,31 @@ mod tests {
         let mut pos = parse_record("4Lr35 4Lr32").unwrap();
         let w = Weights {
             narrow_keep: 40,
-            ..DEFAULT_WEIGHTS
+            ..HAND_WEIGHTS
         };
-        let before = evaluate(&pos, &w) - evaluate(&pos, &DEFAULT_WEIGHTS);
+        let before = evaluate(&pos, &w) - evaluate(&pos, &HAND_WEIGHTS);
         assert_eq!(before, 0);
         pos.inv[1 - pos.to_move][0] = 0;
         pos.inv[1 - pos.to_move][1] = 0;
-        assert!(evaluate(&pos, &w) - evaluate(&pos, &DEFAULT_WEIGHTS) > 0);
+        assert!(evaluate(&pos, &w) - evaluate(&pos, &HAND_WEIGHTS) > 0);
+    }
+
+    #[test]
+    fn default_weights_are_usable() {
+        // Les tests ci-dessus isolent une option sur `HAND_WEIGHTS` : ceux-ci
+        // couvrent les poids réellement livrés.
+        assert!((max_step(&DEFAULT_WEIGHTS) as usize) < RING);
+        let pos = Position::new(BLUE);
+        let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
+        assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
+        // `vstep` : une tour coûte autant qu'une rangée.
+        assert_eq!(tb, lr);
     }
 
     #[test]
     fn own_floor_row_shortens_distance() {
         let pos = parse_record("3I1 11 3I4").unwrap();
-        let (lr, _) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
-        assert_eq!(lr, 3 * DEFAULT_WEIGHTS.empty);
+        let (lr, _) = distances(&pos, BLUE, &HAND_WEIGHTS);
+        assert_eq!(lr, 3 * HAND_WEIGHTS.empty);
     }
 }

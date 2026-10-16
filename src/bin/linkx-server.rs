@@ -1,6 +1,8 @@
 //! Service HTTP du tournoi : une seule route, n'importe quel chemin.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
@@ -14,8 +16,9 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use tokio::sync::Semaphore;
 
+use linkx_bot::game::Position;
 use linkx_bot::notation::{format_move, parse_record_lenient};
-use linkx_bot::search::Searcher;
+use linkx_bot::search::{MATE, Searcher};
 
 #[derive(Deserialize)]
 struct MoveRequest {
@@ -43,6 +46,174 @@ struct Config {
     threads: usize,
     tuning: String,
     searches: Semaphore,
+    games: Games,
+    ponder: bool,
+}
+
+/// Recherches gardées d'un appel à l'autre, par partie (champ `game`) : table
+/// de transposition, historique et cache d'évaluation restent chauds. Le
+/// protocole interdit d'en dépendre, pas d'en profiter : sans entrée, on
+/// repart d'un `Searcher` neuf, comme avant.
+struct Games {
+    slots: Mutex<HashMap<String, GameSlot>>,
+    capacity: usize,
+    /// Recherches en cours pour de vrais appels : la réflexion leur cède la place.
+    active: AtomicUsize,
+    /// Arrêt du service : plus aucune réflexion, pour ne pas retarder la sortie.
+    closing: AtomicBool,
+}
+
+/// Compte une vraie recherche dans `active`, décomptée même en cas de panique.
+struct ActiveSearch<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveSearch<'a> {
+    fn enter(active: &'a AtomicUsize) -> Self {
+        active.fetch_add(1, SeqCst);
+        ActiveSearch(active)
+    }
+}
+
+impl Drop for ActiveSearch<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
+    }
+}
+
+struct GameSlot {
+    searcher: Arc<Mutex<Searcher>>,
+    stop: Arc<AtomicBool>,
+    /// Levé pendant une tranche de réflexion : seule celle-ci peut être
+    /// interrompue par l'appel d'une autre partie, jamais une vraie recherche.
+    pondering: Arc<AtomicBool>,
+    last_used: Instant,
+}
+
+#[derive(Clone)]
+struct Slot {
+    searcher: Arc<Mutex<Searcher>>,
+    stop: Arc<AtomicBool>,
+    pondering: Arc<AtomicBool>,
+}
+
+/// Tranche de réflexion : entre deux tranches, on vérifie qu'aucun appel n'attend.
+const PONDER_SLICE: Duration = Duration::from_millis(300);
+const PONDER_MAX: Duration = Duration::from_secs(15);
+/// Profondeur maximale d'une tranche de réflexion.
+const PONDER_DEPTH: u32 = 64;
+
+impl Games {
+    fn new(capacity: usize) -> Self {
+        Games {
+            slots: Mutex::new(HashMap::new()),
+            capacity,
+            active: AtomicUsize::new(0),
+            closing: AtomicBool::new(false),
+        }
+    }
+
+    /// Une vraie recherche ou l'arrêt du service attend : la réflexion s'efface.
+    fn busy(&self) -> bool {
+        self.active.load(SeqCst) != 0 || self.closing.load(SeqCst)
+    }
+
+    /// Arrêt du service : les réflexions en cours s'interrompent aussitôt.
+    fn close(&self) {
+        self.closing.store(true, SeqCst);
+        self.stop_ponders();
+    }
+
+    fn slots(&self) -> MutexGuard<'_, HashMap<String, GameSlot>> {
+        self.slots.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Le `Searcher` de cette partie, créé au besoin, la moins récente évincée.
+    fn slot(&self, game: &str, tuning: &str, threads: usize) -> Option<Slot> {
+        if game.is_empty() || self.capacity == 0 {
+            return None;
+        }
+        let mut slots = self.slots();
+        if let Some(slot) = slots.get_mut(game) {
+            slot.last_used = Instant::now();
+            return Some(Slot {
+                searcher: slot.searcher.clone(),
+                stop: slot.stop.clone(),
+                pondering: slot.pondering.clone(),
+            });
+        }
+        // Évincer une entrée occupée est sans danger : qui la tient garde son
+        // `Arc`, et une réflexion s'arrête dès qu'un vrai appel est en cours.
+        if slots.len() >= self.capacity
+            && let Some(oldest) = slots
+                .iter()
+                .min_by_key(|(_, s)| s.last_used)
+                .map(|(k, _)| k.clone())
+        {
+            slots.remove(&oldest);
+        }
+        let mut searcher = Searcher::new(TT_BITS);
+        searcher.configure(tuning);
+        searcher.options.threads = threads;
+        let slot = Slot {
+            stop: searcher.stop_handle(),
+            searcher: Arc::new(Mutex::new(searcher)),
+            pondering: Arc::new(AtomicBool::new(false)),
+        };
+        slots.insert(
+            game.to_string(),
+            GameSlot {
+                searcher: slot.searcher.clone(),
+                stop: slot.stop.clone(),
+                pondering: slot.pondering.clone(),
+                last_used: Instant::now(),
+            },
+        );
+        Some(slot)
+    }
+
+    /// Interrompt les réflexions en cours, et elles seules.
+    fn stop_ponders(&self) {
+        for slot in self.slots().values() {
+            if slot.pondering.load(SeqCst) {
+                slot.stop.store(true, SeqCst);
+            }
+        }
+    }
+}
+
+/// Reprend la main sur un `Searcher` en train de réfléchir : `search` remet le
+/// drapeau à zéro en démarrant, on le relève jusqu'à obtenir le verrou.
+fn take<'a>(searcher: &'a Mutex<Searcher>, stop: &AtomicBool) -> MutexGuard<'a, Searcher> {
+    loop {
+        stop.store(true, SeqCst);
+        match searcher.try_lock() {
+            Ok(guard) => return guard,
+            Err(TryLockError::Poisoned(p)) => return p.into_inner(),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+}
+
+/// Réflexion pendant le tour adverse, sur la position qui suit notre coup.
+fn ponder(config: &Config, slot: &Slot, after: Position) {
+    let started = Instant::now();
+    while started.elapsed() < PONDER_MAX && !config.games.busy() {
+        let Ok(mut guard) = slot.searcher.try_lock() else {
+            return;
+        };
+        slot.pondering.store(true, SeqCst);
+        // Gain immédiat, mat trouvé ou profondeur maximale : une tranche de
+        // plus n'apprendrait rien et tournerait à vide.
+        let done = config.games.busy()
+            || guard
+                .search(&after, PONDER_SLICE, PONDER_DEPTH)
+                .is_none_or(|r| {
+                    r.score.abs() >= MATE - PONDER_DEPTH as i32 || r.depth >= PONDER_DEPTH
+                });
+        slot.pondering.store(false, SeqCst);
+        if done {
+            return;
+        }
+    }
 }
 
 fn env_number(name: &str, default: u64) -> u64 {
@@ -60,6 +231,8 @@ impl Config {
             threads: env_number("LINKX_THREADS", 1).max(1) as usize,
             tuning: std::env::var("LINKX_CONFIG").unwrap_or_default(),
             searches: Semaphore::new(MAX_SEARCHES),
+            games: Games::new(env_number("LINKX_GAMES", 3) as usize),
+            ponder: env_number("LINKX_PONDER", 1) != 0,
         }
     }
 
@@ -152,18 +325,42 @@ async fn play(
     let budget = config.budget(deadline.as_millis() as u64);
     // Filet ultime : même si la recherche dérape, on répond avant le délai.
     let hard_stop = deadline.saturating_sub(Duration::from_millis(config.margin_ms / 2));
+    let search_deadline = started + budget;
     let outcome = tokio::time::timeout(hard_stop.saturating_sub(started.elapsed()), async {
         let permit = tokio::time::timeout(budget / 2, config.searches.acquire()).await;
-        let (tt_bits, time) = match &permit {
-            Ok(Ok(_)) => (TT_BITS, budget.saturating_sub(started.elapsed())),
-            _ => (OVERFLOW_TT_BITS, budget / 10),
-        };
+        let permitted = matches!(permit, Ok(Ok(_)));
         let config = config.clone();
+        let game = game.clone();
         let search = tokio::task::spawn_blocking(move || {
-            let mut searcher = Searcher::new(tt_bits);
-            searcher.configure(&config.tuning);
-            searcher.options.threads = config.threads;
-            searcher.search(&pos, time, 64)
+            let _active = ActiveSearch::enter(&config.games.active);
+            config.games.stop_ponders();
+            let slot = if permitted {
+                config.games.slot(&game, &config.tuning, config.threads)
+            } else {
+                None
+            };
+            let result = match &slot {
+                Some(slot) => {
+                    let mut guard = take(&slot.searcher, &slot.stop);
+                    let time = search_deadline.saturating_duration_since(Instant::now());
+                    guard.search(&pos, time.max(Duration::from_millis(50)), 64)
+                }
+                None => {
+                    let (tt_bits, time) = if permitted {
+                        (
+                            TT_BITS,
+                            search_deadline.saturating_duration_since(Instant::now()),
+                        )
+                    } else {
+                        (OVERFLOW_TT_BITS, budget / 10)
+                    };
+                    let mut searcher = Searcher::new(tt_bits);
+                    searcher.configure(&config.tuning);
+                    searcher.options.threads = config.threads;
+                    searcher.search(&pos, time, 64)
+                }
+            };
+            (result, slot)
         });
         let result = search.await;
         drop(permit);
@@ -171,6 +368,18 @@ async fn play(
     })
     .await;
 
+    let (outcome, cached) = match outcome {
+        Ok(Ok((r, cached))) => (Ok(Ok(r)), cached),
+        Ok(Err(e)) => (Ok(Err(e)), None),
+        Err(e) => (Err(e), None),
+    };
+    if let (true, Some(slot), Ok(Ok(Some(r)))) = (config.ponder, cached, &outcome) {
+        let mut after = pos;
+        if after.play(r.best).is_ok() && after.outcome.is_none() {
+            let config = config.clone();
+            tokio::task::spawn_blocking(move || ponder(&config, &slot, after));
+        }
+    }
     let (mv, detail) = match outcome {
         Ok(Ok(Some(r))) => (
             r.best,
@@ -218,10 +427,12 @@ async fn main() {
         .await
         .unwrap();
     eprintln!("Promptoramix à l'écoute sur :{port}");
-    axum::serve(listener, app(config))
+    axum::serve(listener, app(config.clone()))
         .with_graceful_shutdown(shutdown())
         .await
         .unwrap();
+    // Sans cela, l'arrêt du runtime attendrait la fin des réflexions (`PONDER_MAX`).
+    config.games.close();
 }
 
 #[cfg(test)]
@@ -260,6 +471,9 @@ mod tests {
             threads: 1,
             tuning: String::new(),
             searches: Semaphore::new(MAX_SEARCHES),
+            games: Games::new(3),
+            // Une réflexion en cours retarde la fin du test jusqu'à `PONDER_MAX`.
+            ponder: false,
         })
     }
 
@@ -339,6 +553,43 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(started.elapsed() < Duration::from_millis(2000));
         assert_legal("b 4Lr35", &json);
+    }
+
+    #[tokio::test]
+    async fn pondering_never_delays_the_next_call() {
+        let config = Arc::new(Config {
+            ponder: true,
+            ..Arc::into_inner(config(None)).unwrap()
+        });
+        let (_, first) = post(
+            config.clone(),
+            r#"{"game":"p","record":"4Lr35","deadline_ms":2000}"#,
+            HeaderMap::new(),
+        )
+        .await;
+        let ours = first["move"].as_str().unwrap().to_string();
+        // La réflexion tourne maintenant sur la position après notre coup.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let mut pos = parse_record_lenient(&format!("4Lr35 {ours}")).unwrap();
+        let mut replies = Vec::new();
+        pos.legal_moves(&mut replies);
+        pos.play(replies[0]).unwrap();
+        let record = format!(
+            "4Lr35 {ours} {}",
+            linkx_bot::notation::format_move(replies[0])
+        );
+        let body = format!(r#"{{"game":"p","record":"{record}","deadline_ms":2000}}"#);
+        let started = Instant::now();
+        let (status, second) = post(config.clone(), &body, HeaderMap::new()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            started.elapsed() < Duration::from_millis(2000),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_legal(&record, &second);
+        assert_eq!(config.games.slots().len(), 1);
+        config.games.close();
     }
 
     #[tokio::test]
