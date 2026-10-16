@@ -1,5 +1,5 @@
 # Build et exécution sur la même Debian (bookworm) : même glibc des deux côtés.
-FROM rust:1.92-slim-bookworm AS build
+FROM rust:1.99-slim-bookworm AS build
 WORKDIR /app
 # flip (Hetzner cx23) et tout x86-64 récent : popcnt matériel pour count_ones.
 ENV RUSTFLAGS="-C target-cpu=x86-64-v2"

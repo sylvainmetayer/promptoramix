@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
-use crate::game::{Move, Position, drop_mask, flood, lowest_bit, spans, spread};
+use crate::game::{Move, Position, drop_mask, flood, spans, spread};
 use crate::pieces::{SHAPES, orientations};
 
 pub const MATE: i32 = 1_000_000;
@@ -248,7 +248,7 @@ impl Searcher {
         let mut count = 0;
         let mut rest = own;
         while rest != 0 {
-            let z = flood(lowest_bit(rest), own);
+            let z = flood(rest.isolate_lowest_one(), own);
             zones[count] = z;
             count += 1;
             rest &= !z;
