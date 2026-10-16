@@ -8,7 +8,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::Sha256;

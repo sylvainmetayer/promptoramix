@@ -120,19 +120,11 @@ pub fn spans(zone: u128) -> bool {
     (zone & COL0 != 0 && zone & COL8 != 0) || (zone & ROW0 != 0 && zone & ROW8 != 0)
 }
 
-/// Bit de poids faible. `isolate_lowest_one` n'est stable qu'après la
-/// toolchain épinglée ; le lint qui la réclame est donc neutralisé ici seul.
-#[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
-#[inline]
-pub fn lowest_bit(x: u128) -> u128 {
-    x & x.wrapping_neg()
-}
-
 pub fn largest_zone(own: u128) -> u32 {
     let mut rest = own;
     let mut best = 0;
     while rest != 0 {
-        let zone = flood(lowest_bit(rest), own);
+        let zone = flood(rest.isolate_lowest_one(), own);
         best = best.max(zone.count_ones());
         rest &= !zone;
     }
