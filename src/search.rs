@@ -182,7 +182,9 @@ pub const DEFAULT_OPTIONS: Options = Options {
     eval_order: true,
     eval_order_depth: 3,
     threat_extension: false,
-    book: true,
+    // Désactivé : contre la maison, 44–22 avec le livre, 50–16 sans (68 parties),
+    // des débuts figés qu'elle exploite jusqu'au blocage.
+    book: false,
     eval_cache: true,
     stop_early: false,
     threads: 1,
