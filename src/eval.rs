@@ -52,6 +52,19 @@ pub const DEFAULT_WEIGHTS: Weights = Weights {
 
 pub const UNREACHABLE: i32 = 400;
 
+/// Pièces étroites (mono, domino, barre) : les formes `0..NARROW_SHAPES`.
+pub const NARROW_SHAPES: usize = 3;
+
+/// Pièces étroites encore en réserve pour `p`.
+fn narrow_held(pos: &Position, p: usize) -> i32 {
+    pos.inv[p][..NARROW_SHAPES].iter().map(|&c| c as i32).sum()
+}
+
+/// Cases vides coincées entre deux cases pleines ou un bord.
+fn narrow_cells(occ: u128) -> u128 {
+    !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL
+}
+
 pub fn remaining_cells(pos: &Position, p: usize) -> i32 {
     (0..SHAPES)
         .map(|s| pos.inv[p][s] as i32 * SHAPE_SIZES[s] as i32)
@@ -71,8 +84,8 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     let occ = pos.occupied();
     // Case vide coincée entre deux cases pleines ou un bord : seule une pièce
     // étroite (mono, domino, barre) peut encore s'y loger sans appui latéral.
-    let narrow = !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL;
-    let has_narrow = pos.inv[p][0] + pos.inv[p][1] + pos.inv[p][2] > 0;
+    let narrow = narrow_cells(occ);
+    let has_narrow = narrow_held(pos, p) > 0;
     let narrow_cost = if has_narrow {
         w.narrow_ok
     } else {
@@ -121,7 +134,11 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
         }
     }
     let active = &active[..n];
-    let vstep = w.vstep.then_some((w.empty.max(0) as usize).min(RING - 1));
+    // `vstep` : la case du dessus coûte une case vide, plus le surcoût étroit.
+    let to_step = |c: i32| (c.max(0) as usize).min(RING - 1);
+    let vstep = w
+        .vstep
+        .then_some((narrow, to_step(w.empty), to_step(w.empty + narrow_cost)));
     let lr = shortest(own, blocked, active, vstep, COL_FIRST, COL_LAST);
     // Du bas vers le haut : `vstep` ne joue qu'en montant.
     let tb = shortest(own, blocked, active, vstep, ROW_LAST, ROW_FIRST);
@@ -138,7 +155,7 @@ fn shortest(
     own: u128,
     blocked: u128,
     active: &[(u128, usize)],
-    vstep: Option<usize>,
+    vstep: Option<(u128, usize, usize)>,
     start: u128,
     goal: u128,
 ) -> i32 {
@@ -176,11 +193,12 @@ fn shortest(
         }
         settled |= cur;
         let mut frontier = spread(cur) & !settled;
-        if let Some(step) = vstep {
+        if let Some((narrow, step, narrow_step)) = vstep {
             // Posée sur une case du chemin, la case du dessus n'a plus de creux
             // à combler : une tour se compte case par case.
             let above = (cur >> N) & frontier & !own;
-            push(&mut ring, &mut pending, d + step, above);
+            push(&mut ring, &mut pending, d + step, above & !narrow);
+            push(&mut ring, &mut pending, d + narrow_step, above & narrow);
             frontier &= !above;
         }
         for &(cells, step) in active {
@@ -195,24 +213,21 @@ fn connection_score(pos: &Position, p: usize, w: &Weights) -> (i32, bool) {
     let (lr, tb) = distances(pos, p, w);
     let (best, mut other) = if lr <= tb { (lr, tb) } else { (tb, lr) };
     let infeasible = best >= UNREACHABLE || best / w.empty.max(1) > remaining_cells(pos, p);
+    // Avant tout plafonnement de `other` : un axe coupé reste coupé.
+    let cut = other >= UNREACHABLE || infeasible;
     if w.cliff {
         // Pas de falaise : l'axe secondaire ne pèse jamais plus que l'écart à
         // l'axe principal, et un joueur coupé vaut la pire distance atteignable.
         other = other.min(best + 60);
-        let worst = UNREACHABLE * 16 + (UNREACHABLE + 60) * w.second_axis;
-        let d = if infeasible {
-            worst
-        } else {
-            (best * 16 + other * w.second_axis).min(worst)
-        };
-        return (d, other >= UNREACHABLE || infeasible);
     }
-    let d = if infeasible {
-        UNREACHABLE * 20
-    } else {
+    let d = if !infeasible {
         best * 16 + other * w.second_axis
+    } else if w.cliff {
+        UNREACHABLE * 16 + (UNREACHABLE + 60) * w.second_axis
+    } else {
+        UNREACHABLE * 20
     };
-    (d, other >= UNREACHABLE || infeasible)
+    (d, cut)
 }
 
 /// Score pour le joueur au trait.
@@ -222,26 +237,24 @@ pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     let (dp, cut_p) = connection_score(pos, p, w);
     let (dq, cut_q) = connection_score(pos, q, w);
     let dist = (dq - dp) * w.distance / 16;
-    let filled = pos.occupied().count_ones() as i32;
+    let occ = pos.occupied();
+    let filled = occ.count_ones() as i32;
     let zones = largest_zone(pos.bb[p]) as i32 - largest_zone(pos.bb[q]) as i32;
-    let narrow_left = |r: usize| pos.inv[r][0] + pos.inv[r][1] + pos.inv[r][2] > 0;
-    let zone_weight = if w.zone_phase && (cut_p || cut_q || !narrow_left(p) || !narrow_left(q)) {
+    let (held_p, held_q) = (narrow_held(pos, p), narrow_held(pos, q));
+    let zone_term = if w.zone_phase && (cut_p || cut_q || held_p == 0 || held_q == 0) {
         // Phase de blocage : le départage aux zones devient l'enjeu.
-        w.zone + 120
+        zones * (w.zone + 120)
     } else {
-        w.zone * filled / 81
+        zones * w.zone * filled / 81
     };
     let keep = if w.narrow_keep != 0 {
         // Une pièce étroite en réserve vaut d'autant plus qu'il y a de puits.
-        let occ = pos.occupied();
-        let narrow = !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL;
-        let wells = narrow.count_ones() as i32;
-        let held = |r: usize| (pos.inv[r][0] + pos.inv[r][1] + pos.inv[r][2]) as i32;
-        (held(p) - held(q)) * w.narrow_keep * (1 + wells.min(12)) / 4
+        let wells = narrow_cells(occ).count_ones() as i32;
+        (held_p - held_q) * w.narrow_keep * (1 + wells.min(12)) / 4
     } else {
         0
     };
-    dist + zones * zone_weight + keep + w.tempo
+    dist + zone_term + keep + w.tempo
 }
 
 #[cfg(test)]
@@ -298,6 +311,44 @@ mod tests {
         let (lr, tb) = distances(&pos, BLUE, &w);
         assert_eq!(lr, 9 * w.empty);
         assert_eq!(tb, 9 * w.empty);
+    }
+
+    #[test]
+    fn cliff_caps_the_second_axis_and_keeps_the_cut_flag() {
+        // Bleu tient le fond de la colonne 1 à la colonne 6 : son axe gauche-droite
+        // est court, l'axe haut-bas lointain.
+        let pos = parse_record("3I1 11 3I4 12").unwrap();
+        let plain = connection_score(&pos, BLUE, &DEFAULT_WEIGHTS);
+        let capped = connection_score(
+            &pos,
+            BLUE,
+            &Weights {
+                cliff: true,
+                ..DEFAULT_WEIGHTS
+            },
+        );
+        assert!(capped.0 <= plain.0);
+        let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
+        let (best, other) = (lr.min(tb), lr.max(tb));
+        assert_eq!(
+            capped.0,
+            best * 16 + other.min(best + 60) * DEFAULT_WEIGHTS.second_axis
+        );
+        assert_eq!(capped.1, plain.1);
+    }
+
+    #[test]
+    fn keeping_narrow_pieces_is_rewarded() {
+        let mut pos = parse_record("4Lr35 4Lr32").unwrap();
+        let w = Weights {
+            narrow_keep: 40,
+            ..DEFAULT_WEIGHTS
+        };
+        let before = evaluate(&pos, &w) - evaluate(&pos, &DEFAULT_WEIGHTS);
+        assert_eq!(before, 0);
+        pos.inv[1 - pos.to_move][0] = 0;
+        pos.inv[1 - pos.to_move][1] = 0;
+        assert!(evaluate(&pos, &w) - evaluate(&pos, &DEFAULT_WEIGHTS) > 0);
     }
 
     #[test]

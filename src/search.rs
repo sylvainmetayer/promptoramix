@@ -466,7 +466,8 @@ impl Searcher {
             let quiet = Some(m) != tt_move && Some(m) != killers[0] && Some(m) != killers[1];
             // Les victoires forcées manquées passaient surtout par un domino ou
             // une barre, rangés tard puis réduits : on les cherche en entier.
-            let narrow_piece = self.options.lmr_spare_narrow && m.shape <= 2;
+            let narrow_piece =
+                self.options.lmr_spare_narrow && (m.shape as usize) < crate::eval::NARROW_SHAPES;
             let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet && !narrow_piece {
                 if i >= 12 { 2 } else { 1 }
             } else {
@@ -607,7 +608,10 @@ impl Searcher {
             elapsed: start.elapsed(),
         };
         let mut result = done(moves[0], 0, 0, 0);
-        for depth in (1 + depth_offset)..=max_depth.max(1 + depth_offset) {
+        // Le décalage ne fait jamais dépasser `max_depth` ni sauter toute
+        // itération ; `max_depth == 0` ne cherche rien, comme avant.
+        let first = (1 + depth_offset).min(max_depth.max(1));
+        for depth in first..=max_depth {
             let mut alpha = -MATE * 2;
             let beta = MATE * 2;
             let mut iter_best: Option<(Move, i32)> = None;
