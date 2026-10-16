@@ -421,15 +421,19 @@ impl Searcher {
 
         self.order(&mut moves, tt_move, ply);
         let killers = self.killers[ply.min(MAX_PLY - 1)];
-        let mut children: Vec<(Move, Position)> = moves
-            .iter()
-            .map(|&m| {
-                let mut c = *pos;
-                c.play(m).unwrap();
-                (m, c)
-            })
-            .collect();
-        if self.options.eval_order && depth >= self.options.eval_order_depth {
+        // Sans tri par évaluation, les enfants sont joués à la demande : une
+        // coupure dès les premiers coups évite de jouer tous les autres.
+        let sort_by_eval = self.options.eval_order && depth >= self.options.eval_order_depth;
+        let mut children: Vec<(Move, Position)> = Vec::new();
+        if sort_by_eval {
+            children = moves
+                .iter()
+                .map(|&m| {
+                    let mut c = *pos;
+                    c.play(m).unwrap();
+                    (m, c)
+                })
+                .collect();
             // Le coup de la table reste en tête ; les autres, par évaluation statique.
             let skip = usize::from(tt_move.is_some());
             let p = pos.to_move;
@@ -453,8 +457,15 @@ impl Searcher {
         let alpha0 = alpha;
         let mut best = -MATE * 2;
         let mut best_move = moves[0];
-        for (i, (m, child)) in children.iter().enumerate() {
-            let m = *m;
+        for i in 0..moves.len() {
+            let (m, child) = if sort_by_eval {
+                children[i]
+            } else {
+                let mut c = *pos;
+                c.play(moves[i]).unwrap();
+                (moves[i], c)
+            };
+            let child = &child;
             let same = child.to_move == pos.to_move;
             let search = |s: &mut Self, d: i32, a: i32, b: i32| {
                 if same {
