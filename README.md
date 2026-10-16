@@ -40,7 +40,8 @@ PORT=8080 LINKX_SECRET=… cargo run --release --bin linkx-server
 curl -s localhost:8080/ -d '{"protocol":1,"game":"x","color":"blue","record":"","deadline_ms":6000}'
 ```
 
-Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, signature vérifiée, sinon 401),
+Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signature invalide reçoit un 401 ;
+absente, aucune vérification),
 `LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
 (réglages `clé=valeur,…` de l'évaluation, pour les essais).
@@ -60,16 +61,11 @@ L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le ban
 ## Intégration continue
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
-  (étiquettes `main` et `sha-…`) poussée à chaque push sur `main`, et contrôlée (`/health` puis un coup).
+  contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`.
 - `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
   (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).
 - Renovate tient les actions et les crates à jour.
 
 ## Déploiement
 
-Sur le serveur `flip` du homelab (rôle Ansible `promptoramix`), derrière Pangolin :
-<https://promptoramix.sylvain.cloud>. Le secret de la plateforme est dans SOPS
-(`promptoramix_linkx_secret`) et arrive au conteneur en `LINKX_SECRET`. Renovate y suit le digest
-de `:main` et fusionne automatiquement : chaque push sur `main` part en production.
-
-En local : `docker run -p 8080:8080 -e LINKX_SECRET=… ghcr.io/sylvainmetayer/promptoramix:main`.
+En ligne sur <https://promptoramix.sylvain.cloud>.

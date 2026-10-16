@@ -1,0 +1,6 @@
+# Même version que l'image de build (Dockerfile) : une nouvelle version de
+# Clippy ne doit pas casser la CI sans changement de code.
+[toolchain]
+channel = "1.92.0"
+components = ["clippy", "rustfmt", "llvm-tools-preview"]
+profile = "minimal"
