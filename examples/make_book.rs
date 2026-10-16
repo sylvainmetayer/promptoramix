@@ -38,5 +38,5 @@ fn main() {
         .unwrap();
     }
     out.push_str("];\n");
-    std::fs::write("src/book.rs", out).unwrap();
+    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/src/book.rs"), out).unwrap();
 }
