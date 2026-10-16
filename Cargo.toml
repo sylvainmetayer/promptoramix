@@ -1,0 +1,13 @@
+[package]
+name = "linkx-bot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.7"
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10"
+tokio = { version = "1.53.3", features = ["full"] }
