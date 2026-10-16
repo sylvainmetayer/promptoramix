@@ -96,9 +96,11 @@ pub struct Searcher {
 pub struct Options {
     pub lmr: bool,
     pub eval_order: bool,
+    /// Ne pas entamer d'itération après le premier tiers du budget.
+    pub stop_early: bool,
 }
 
-pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true };
+pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true, stop_early: false };
 
 impl Searcher {
     pub fn new(tt_bits: u32) -> Self {
@@ -357,7 +359,7 @@ impl Searcher {
             if alpha.abs() >= MATE - MAX_PLY as i32 {
                 break;
             }
-            if start.elapsed() * 3 > budget {
+            if self.options.stop_early && start.elapsed() * 3 > budget {
                 break;
             }
         }

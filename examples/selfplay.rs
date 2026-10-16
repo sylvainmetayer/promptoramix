@@ -27,6 +27,7 @@ fn configure(s: &mut Searcher, spec: &str) {
             "tempo" => w.tempo = n,
             "lmr" => s.options.lmr = n != 0,
             "eo" => s.options.eval_order = n != 0,
+            "early" => s.options.stop_early = n != 0,
             _ => panic!("clé inconnue {k}"),
         }
     }

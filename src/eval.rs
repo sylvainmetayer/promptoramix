@@ -19,7 +19,7 @@ pub struct Weights {
 }
 
 pub const DEFAULT_WEIGHTS: Weights =
-    Weights { empty: 4, gap: 3, distance: 40, second_axis: 4, zone: 30, tempo: 60 };
+    Weights { empty: 4, gap: 3, distance: 40, second_axis: 12, zone: 30, tempo: 60 };
 
 pub const UNREACHABLE: i32 = 400;
 
