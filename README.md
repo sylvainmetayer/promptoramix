@@ -68,9 +68,4 @@ L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le ban
 
 ## Déploiement
 
-Sur le serveur `flip` du homelab (rôle Ansible `promptoramix`), derrière Pangolin :
-<https://promptoramix.sylvain.cloud>. Le secret de la plateforme est dans SOPS
-(`promptoramix_linkx_secret`) et arrive au conteneur en `LINKX_SECRET`. Renovate y suit le digest
-de `:main` et fusionne automatiquement : chaque push sur `main` part en production.
-
-En local : `docker run -p 8080:8080 -e LINKX_SECRET=… ghcr.io/sylvainmetayer/promptoramix:main`.
+En ligne sur <https://promptoramix.sylvain.cloud>.
