@@ -13,7 +13,7 @@ const arg = (name: string, fallback: number) => {
 const GAMES = arg('--games', 4)
 const OURS_MS = arg('--ours-ms', 4500)
 const HOUSE_MS = arg('--house-ms', 900)
-const BIN = new URL('../target/release/linkx-cli', import.meta.url).pathname
+const BIN = process.env.LINKX_BIN ?? new URL('../target/release/linkx-cli', import.meta.url).pathname
 const startIndex = process.argv.indexOf('--start')
 const starts = startIndex >= 0 ? [process.argv[startIndex + 1]] : process.argv.includes('--openings') ? ['', ...OPENINGS.map((o) => o.notation)] : ['']
 const ONLY = process.argv.includes('--blue-only') ? 'blue' : process.argv.includes('--white-only') ? 'white' : null

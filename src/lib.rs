@@ -1,3 +1,4 @@
+pub mod book;
 pub mod eval;
 pub mod game;
 pub mod notation;

@@ -142,6 +142,52 @@ pub fn hash(pos: &Position) -> u64 {
     h
 }
 
+/// Les scores de mat comptent les demi-coups depuis la racine ; la table les
+/// garde relatifs au nœud, pour qu'une position atteinte à une autre
+/// profondeur relise la bonne distance au mat.
+fn to_tt(score: i32, ply: usize) -> i32 {
+    if score >= MATE - MAX_PLY as i32 {
+        score + ply as i32
+    } else if score <= -(MATE - MAX_PLY as i32) {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+fn from_tt(score: i32, ply: usize) -> i32 {
+    if score >= MATE - MAX_PLY as i32 {
+        score - ply as i32
+    } else if score <= -(MATE - MAX_PLY as i32) {
+        score + ply as i32
+    } else {
+        score
+    }
+}
+
+/// Coup du livre d'ouverture, s'il couvre cette position et y est légal.
+fn book_move(pos: &Position, moves: &[Move]) -> Option<Move> {
+    let key = hash(pos);
+    let (_, token) = crate::book::BOOK.iter().find(|(k, _)| *k == key)?;
+    let m = crate::notation::parse_move(token).ok()?;
+    moves.contains(&m).then_some(m)
+}
+
+/// Cache d'évaluation à correspondance directe : les transpositions sont
+/// nombreuses (deux pièces posées dans un ordre ou dans l'autre).
+const EVAL_CACHE_BITS: u32 = 18;
+
+fn eval_cached(cache: &mut [(u64, i32)], w: &Weights, pos: &Position) -> i32 {
+    let key = hash(pos) | 1;
+    let slot = &mut cache[key as usize & ((1 << EVAL_CACHE_BITS) - 1)];
+    if slot.0 == key {
+        return slot.1;
+    }
+    let e = evaluate(pos, w);
+    *slot = (key, e);
+    e
+}
+
 pub struct Searcher {
     tt: Arc<Table>,
     stop: Arc<AtomicBool>,
@@ -151,6 +197,7 @@ pub struct Searcher {
     nodes: u64,
     deadline: Instant,
     stopped: bool,
+    eval_cache: Vec<(u64, i32)>,
     pub weights: Weights,
     pub options: Options,
 }
@@ -159,6 +206,14 @@ pub struct Searcher {
 pub struct Options {
     pub lmr: bool,
     pub eval_order: bool,
+    /// Profondeur restante minimale pour ordonner par évaluation statique.
+    pub eval_order_depth: i32,
+    /// Prolonger d'un demi-coup les feuilles où l'adversaire menace de gagner.
+    pub threat_extension: bool,
+    /// Jouer le livre d'ouverture quand il couvre la position.
+    pub book: bool,
+    /// Mémoriser les évaluations statiques déjà calculées.
+    pub eval_cache: bool,
     /// Ne pas entamer d'itération après le premier tiers du budget.
     pub stop_early: bool,
     /// Nombre de fils de recherche (Lazy SMP), 1 par défaut.
@@ -168,6 +223,10 @@ pub struct Options {
 pub const DEFAULT_OPTIONS: Options = Options {
     lmr: true,
     eval_order: true,
+    eval_order_depth: 3,
+    threat_extension: false,
+    book: true,
+    eval_cache: true,
     stop_early: false,
     threads: 1,
 };
@@ -183,6 +242,7 @@ impl Searcher {
             nodes: 0,
             deadline: Instant::now(),
             stopped: false,
+            eval_cache: vec![(0, 0); 1 << EVAL_CACHE_BITS],
             weights: DEFAULT_WEIGHTS,
             options: DEFAULT_OPTIONS,
         }
@@ -207,6 +267,11 @@ impl Searcher {
                 "deep" => w.deep_wells = n != 0,
                 "lmr" => s.options.lmr = n != 0,
                 "eo" => s.options.eval_order = n != 0,
+                "eod" => s.options.eval_order_depth = n,
+                "threat" => s.options.threat_extension = n != 0,
+                "book" => s.options.book = n != 0,
+                "ecache" => s.options.eval_cache = n != 0,
+                "wells3" => w.wells3 = n != 0,
                 "early" => s.options.stop_early = n != 0,
                 "threads" => s.options.threads = n.max(1) as usize,
                 _ => panic!("clé inconnue {k}"),
@@ -236,6 +301,7 @@ impl Searcher {
             nodes: 0,
             deadline: self.deadline,
             stopped: false,
+            eval_cache: vec![(0, 0); 1 << EVAL_CACHE_BITS],
             weights: self.weights,
             options: self.options,
         }
@@ -310,8 +376,24 @@ impl Searcher {
         if Self::winning_move(pos, &moves).is_some() {
             return MATE - ply as i32 - 1;
         }
+        let mut depth = depth;
+        if depth <= 0 && self.options.threat_extension && ply < MAX_PLY - 2 {
+            // Feuille calme en apparence, mais l'adversaire gagne au coup
+            // suivant : on regarde nos parades plutôt que d'évaluer.
+            let mut opp = Vec::with_capacity(160);
+            pos.legal_moves_for(1 - pos.to_move, &mut opp);
+            let mut threatened = *pos;
+            threatened.to_move = 1 - pos.to_move;
+            if Self::winning_move(&threatened, &opp).is_some() {
+                depth = 1;
+            }
+        }
         if depth <= 0 || ply >= MAX_PLY - 1 {
-            return evaluate(pos, &self.weights);
+            return if self.options.eval_cache {
+                eval_cached(&mut self.eval_cache, &self.weights, pos)
+            } else {
+                evaluate(pos, &self.weights)
+            };
         }
 
         let key = hash(pos);
@@ -319,7 +401,7 @@ impl Searcher {
         if let Some(e) = self.tt.probe(key) {
             tt_move = e.best;
             if e.depth as i32 >= depth {
-                let s = e.score;
+                let s = from_tt(e.score, ply);
                 if e.bound == EXACT
                     || (e.bound == LOWER && s >= beta)
                     || (e.bound == UPPER && s <= alpha)
@@ -339,16 +421,22 @@ impl Searcher {
                 (m, c)
             })
             .collect();
-        if self.options.eval_order && depth >= 2 {
+        if self.options.eval_order && depth >= self.options.eval_order_depth {
             // Le coup de la table reste en tête ; les autres, par évaluation statique.
             let skip = usize::from(tt_move.is_some());
             let p = pos.to_move;
             let w = self.weights;
+            let use_cache = self.options.eval_cache;
+            let cache = &mut self.eval_cache;
             children[skip..].sort_by_cached_key(|(_, c)| {
                 let s = if c.outcome.is_some() {
                     if c.winner() == Some(p) { MATE } else { 0 }
                 } else {
-                    let e = evaluate(c, &w);
+                    let e = if use_cache {
+                        eval_cached(cache, &w, c)
+                    } else {
+                        evaluate(c, &w)
+                    };
                     if c.to_move == p { e } else { -e }
                 };
                 -s
@@ -420,7 +508,7 @@ impl Searcher {
             Entry {
                 depth: depth as i8,
                 bound,
-                score: best,
+                score: to_tt(best, ply),
                 best: Some(best_move),
             },
         );
@@ -440,6 +528,17 @@ impl Searcher {
         pos.legal_moves(&mut moves);
         if moves.is_empty() || pos.outcome.is_some() {
             return None;
+        }
+        if self.options.book
+            && let Some(m) = book_move(pos, &moves)
+        {
+            return Some(SearchResult {
+                best: m,
+                score: 0,
+                depth: 0,
+                nodes: 0,
+                elapsed: start.elapsed(),
+            });
         }
         if let Some(m) = Self::winning_move(pos, &moves) {
             return Some(SearchResult {
