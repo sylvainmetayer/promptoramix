@@ -9,14 +9,16 @@ use linkx_bot::notation::parse_record;
 use linkx_bot::search::Searcher;
 
 const OPENINGS: [&str; 17] = [
-    "", "4Tr24", "4Lr38", "4Lsr15", "4Lr35", "4Lr36", "4Tr23", "4Tr21", "3Lr23", "3Lr28",
-    "3Ir15", "4Tr22", "3Ir12", "3Ir17", "3Ir14", "2r15", "3Lr24",
+    "", "4Tr24", "4Lr38", "4Lsr15", "4Lr35", "4Lr36", "4Tr23", "4Tr21", "3Lr23", "3Lr28", "3Ir15",
+    "4Tr22", "3Ir12", "3Ir17", "3Ir14", "2r15", "3Lr24",
 ];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let get = |name: &str, d: &str| {
-        args.iter().position(|a| a == name).map_or(d.to_string(), |i| args[i + 1].clone())
+        args.iter()
+            .position(|a| a == name)
+            .map_or(d.to_string(), |i| args[i + 1].clone())
     };
     let ms: u64 = get("--ms", "300").parse().unwrap();
     let ms_b: u64 = get("--ms-b", &ms.to_string()).parse().unwrap();
@@ -54,10 +56,16 @@ fn main() {
                 sa.configure(&a);
                 sb.configure(&b);
                 loop {
-                    let Some((o, a_color)) = jobs.lock().unwrap().pop() else { return };
+                    let Some((o, a_color)) = jobs.lock().unwrap().pop() else {
+                        return;
+                    };
                     let mut pos = starts[o];
                     while pos.outcome.is_none() {
-                        let (s, t) = if pos.to_move == a_color { (&mut sa, ms) } else { (&mut sb, ms_b) };
+                        let (s, t) = if pos.to_move == a_color {
+                            (&mut sa, ms)
+                        } else {
+                            (&mut sb, ms_b)
+                        };
                         let r = s.search(&pos, Duration::from_millis(t), 64).unwrap();
                         pos.play(r.best).unwrap();
                     }
@@ -76,5 +84,11 @@ fn main() {
     }
     let t = tally.lock().unwrap();
     let n = (t[0] + t[1] + t[2]) as f64;
-    println!("A={a:?} B={b:?} : A {} · B {} · nuls {} → A {:.1} %", t[0], t[1], t[2], 100.0 * (t[0] as f64 + t[2] as f64 / 2.0) / n);
+    println!(
+        "A={a:?} B={b:?} : A {} · B {} · nuls {} → A {:.1} %",
+        t[0],
+        t[1],
+        t[2],
+        100.0 * (t[0] as f64 + t[2] as f64 / 2.0) / n
+    );
 }

@@ -4,6 +4,6 @@ cd "$(dirname "$0")"
 n=${1:-3}
 export LINKX_CONFIG=${2:-}
 for i in $(seq 0 $((n - 1))); do
-  mise exec node@24 -- node duel.ts --games 34 --openings --ours-ms 4500 --house-ms 900 --shard "$i/$n" 2>/dev/null | grep '^#' &
+  mise exec node@24 -- node duel.ts --games ${GAMES:-34} --openings --ours-ms 4500 --house-ms 900 --shard "$i/$n" 2>/dev/null | grep '^#' &
 done
 wait

@@ -33,7 +33,10 @@ impl Entry {
         let mv = self.best.map_or(0, |m| {
             1 | (m.shape as u64) << 1 | (m.orient as u64) << 4 | (m.col as u64) << 7
         });
-        (self.score as u32 as u64) | (self.depth as u8 as u64) << 32 | (self.bound as u64) << 40 | mv << 42
+        (self.score as u32 as u64)
+            | (self.depth as u8 as u64) << 32
+            | (self.bound as u64) << 40
+            | mv << 42
     }
 
     fn unpack(data: u64) -> Self {
@@ -42,7 +45,7 @@ impl Entry {
             score: data as u32 as i32,
             depth: (data >> 32) as u8 as i8,
             bound: ((data >> 40) & 3) as u8,
-            best: (mv & 1 == 1).then(|| Move {
+            best: (mv & 1 == 1).then_some(Move {
                 shape: ((mv >> 1) & 7) as u8,
                 orient: ((mv >> 4) & 7) as u8,
                 col: ((mv >> 7) & 15) as u8,
@@ -61,7 +64,12 @@ pub struct Table {
 impl Table {
     pub fn new(bits: u32) -> Self {
         let size = 1usize << bits;
-        Table { slots: (0..size).map(|_| [AtomicU64::new(0), AtomicU64::new(0)]).collect(), mask: size - 1 }
+        Table {
+            slots: (0..size)
+                .map(|_| [AtomicU64::new(0), AtomicU64::new(0)])
+                .collect(),
+            mask: size - 1,
+        }
     }
 
     fn probe(&self, key: u64) -> Option<Entry> {
@@ -98,7 +106,11 @@ fn zobrist() -> &'static Zobrist {
             s ^= s << 17;
             s
         };
-        let mut z = Zobrist { cells: [[0; 81]; 2], inv: [[[0; 3]; SHAPES]; 2], side: 0 };
+        let mut z = Zobrist {
+            cells: [[0; 81]; 2],
+            inv: [[[0; 3]; SHAPES]; 2],
+            side: 0,
+        };
         for p in 0..2 {
             for i in 0..81 {
                 z.cells[p][i] = next();
@@ -153,7 +165,12 @@ pub struct Options {
     pub threads: usize,
 }
 
-pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true, stop_early: false, threads: 1 };
+pub const DEFAULT_OPTIONS: Options = Options {
+    lmr: true,
+    eval_order: true,
+    stop_early: false,
+    threads: 1,
+};
 
 impl Searcher {
     pub fn new(tt_bits: u32) -> Self {
@@ -187,10 +204,11 @@ impl Searcher {
                 "tempo" => w.tempo = n,
                 "nok" => w.narrow_ok = n,
                 "nnone" => w.narrow_none = n,
+                "deep" => w.deep_wells = n != 0,
                 "lmr" => s.options.lmr = n != 0,
                 "eo" => s.options.eval_order = n != 0,
                 "early" => s.options.stop_early = n != 0,
-            "threads" => s.options.threads = n.max(1) as usize,
+                "threads" => s.options.threads = n.max(1) as usize,
                 _ => panic!("clé inconnue {k}"),
             }
         }
@@ -257,7 +275,9 @@ impl Searcher {
             } else if Some(*m) == k[0] || Some(*m) == k[1] {
                 s += 1 << 30;
             }
-            s += orientations(m.shape as usize)[m.orient as usize].cells.len() as i64;
+            s += orientations(m.shape as usize)[m.orient as usize]
+                .cells
+                .len() as i64;
             -s
         });
     }
@@ -270,7 +290,14 @@ impl Searcher {
         }
     }
 
-    fn negamax(&mut self, pos: &Position, depth: i32, mut alpha: i32, beta: i32, ply: usize) -> i32 {
+    fn negamax(
+        &mut self,
+        pos: &Position,
+        depth: i32,
+        mut alpha: i32,
+        beta: i32,
+        ply: usize,
+    ) -> i32 {
         self.nodes += 1;
         if pos.outcome.is_some() {
             return Self::terminal_score(pos, ply);
@@ -386,11 +413,24 @@ impl Searcher {
         } else {
             EXACT
         };
-        self.tt.store(key, Entry { depth: depth as i8, bound, score: best, best: Some(best_move) });
+        self.tt.store(
+            key,
+            Entry {
+                depth: depth as i8,
+                bound,
+                score: best,
+                best: Some(best_move),
+            },
+        );
         best
     }
 
-    pub fn search(&mut self, pos: &Position, budget: Duration, max_depth: u32) -> Option<SearchResult> {
+    pub fn search(
+        &mut self,
+        pos: &Position,
+        budget: Duration,
+        max_depth: u32,
+    ) -> Option<SearchResult> {
         let start = Instant::now();
         self.deadline = start + budget;
         self.stop.store(false, Relaxed);
@@ -400,7 +440,13 @@ impl Searcher {
             return None;
         }
         if let Some(m) = Self::winning_move(pos, &moves) {
-            return Some(SearchResult { best: m, score: MATE - 1, depth: 1, nodes: 1, elapsed: start.elapsed() });
+            return Some(SearchResult {
+                best: m,
+                score: MATE - 1,
+                depth: 1,
+                nodes: 1,
+                elapsed: start.elapsed(),
+            });
         }
         self.order(&mut moves, None, 0);
         let helpers = self.options.threads.max(1) - 1;
@@ -428,10 +474,23 @@ impl Searcher {
         Some(result)
     }
 
-    fn iterate(&mut self, pos: &Position, mut moves: Vec<Move>, max_depth: u32, budget: Duration, start: Instant) -> SearchResult {
+    fn iterate(
+        &mut self,
+        pos: &Position,
+        mut moves: Vec<Move>,
+        max_depth: u32,
+        budget: Duration,
+        start: Instant,
+    ) -> SearchResult {
         self.stopped = false;
         self.nodes = 0;
-        let done = |best, score, depth, nodes| SearchResult { best, score, depth, nodes, elapsed: start.elapsed() };
+        let done = |best, score, depth, nodes| SearchResult {
+            best,
+            score,
+            depth,
+            nodes,
+            elapsed: start.elapsed(),
+        };
         let mut result = done(moves[0], 0, 0, 0);
         for depth in 1..=max_depth {
             let mut alpha = -MATE * 2;
@@ -449,7 +508,11 @@ impl Searcher {
                         -s.negamax(&child, depth as i32 - 1, -b, -a, 1)
                     }
                 };
-                let mut score = if i == 0 { run(self, alpha, beta) } else { run(self, alpha, alpha + 1) };
+                let mut score = if i == 0 {
+                    run(self, alpha, beta)
+                } else {
+                    run(self, alpha, alpha + 1)
+                };
                 if i > 0 && score > alpha && !self.stopped {
                     score = run(self, alpha, beta);
                 }
@@ -465,7 +528,12 @@ impl Searcher {
             if let Some((m, s)) = iter_best {
                 // Un meilleur coup trouvé dans une itération interrompue a été
                 // entièrement vérifié : on le garde.
-                result = done(m, s, if self.stopped { depth - 1 } else { depth }, self.nodes);
+                result = done(
+                    m,
+                    s,
+                    if self.stopped { depth - 1 } else { depth },
+                    self.nodes,
+                );
             }
             if self.stopped {
                 break;
@@ -493,7 +561,9 @@ mod tests {
     #[test]
     fn finds_immediate_win() {
         let pos = parse_record("3I1 11 3I4 12").unwrap();
-        let r = Searcher::new(16).search(&pos, Duration::from_millis(500), 4).unwrap();
+        let r = Searcher::new(16)
+            .search(&pos, Duration::from_millis(500), 4)
+            .unwrap();
         let mut after = pos;
         after.play(r.best).unwrap();
         assert_eq!(after.winner(), Some(0), "{}", format_move(r.best));
@@ -509,16 +579,32 @@ mod tests {
         after.play(r.best).unwrap();
         let mut replies = Vec::new();
         after.legal_moves(&mut replies);
-        assert!(Searcher::winning_move(&after, &replies).is_none(), "{}", format_move(r.best));
+        assert!(
+            Searcher::winning_move(&after, &replies).is_none(),
+            "{}",
+            format_move(r.best)
+        );
     }
 
     #[test]
     fn table_round_trip() {
         let t = Table::new(4);
-        let e = Entry { depth: 7, bound: LOWER, score: -12345, best: Some(Move { shape: 6, orient: 7, col: 8 }) };
+        let e = Entry {
+            depth: 7,
+            bound: LOWER,
+            score: -12345,
+            best: Some(Move {
+                shape: 6,
+                orient: 7,
+                col: 8,
+            }),
+        };
         t.store(0xDEAD_BEEF, e);
         let got = t.probe(0xDEAD_BEEF).unwrap();
-        assert_eq!((got.depth, got.bound, got.score, got.best), (7, LOWER, -12345, e.best));
+        assert_eq!(
+            (got.depth, got.bound, got.score, got.best),
+            (7, LOWER, -12345, e.best)
+        );
         assert!(t.probe(0xDEAD_BEEF ^ 1 << 40).is_none());
     }
 
@@ -535,7 +621,9 @@ mod tests {
     #[test]
     fn always_returns_a_legal_move_from_start() {
         let pos = Position::new(0);
-        let r = Searcher::new(16).search(&pos, Duration::from_millis(200), 2).unwrap();
+        let r = Searcher::new(16)
+            .search(&pos, Duration::from_millis(200), 2)
+            .unwrap();
         let mut p = pos;
         assert!(p.play(r.best).is_ok());
     }

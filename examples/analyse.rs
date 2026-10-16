@@ -8,14 +8,22 @@ fn main() {
     let mut pos = parse_record("").unwrap();
     let w = DEFAULT_WEIGHTS;
     for (i, tok) in record.split_whitespace().enumerate() {
-        if tok == "--" { continue; }
+        if tok == "--" {
+            continue;
+        }
         let mover = if pos.to_move == 0 { "B" } else { "W" };
         pos.play(parse_move(tok).unwrap()).unwrap();
         let d: Vec<_> = (0..2).map(|p| distances(&pos, p, &w)).collect();
         println!(
             "{:>2} {mover} {tok:<7} distB={:?} distW={:?} zones={}/{} reste={}/{} eval(trait)={}",
-            i + 1, d[0], d[1], largest_zone(pos.bb[0]), largest_zone(pos.bb[1]),
-            remaining_cells(&pos, 0), remaining_cells(&pos, 1), evaluate(&pos, &w)
+            i + 1,
+            d[0],
+            d[1],
+            largest_zone(pos.bb[0]),
+            largest_zone(pos.bb[1]),
+            remaining_cells(&pos, 0),
+            remaining_cells(&pos, 1),
+            evaluate(&pos, &w)
         );
     }
     print!("{}", pos.render());

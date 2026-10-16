@@ -19,15 +19,28 @@ pub struct Weights {
     /// Surcoût d'une case étroite, selon qu'il reste ou non une pièce étroite.
     pub narrow_ok: i32,
     pub narrow_none: i32,
+    /// Puits profonds infranchissables sans pièce étroite.
+    pub deep_wells: bool,
 }
 
-pub const DEFAULT_WEIGHTS: Weights =
-    Weights { empty: 4, gap: 3, distance: 40, second_axis: 12, zone: 30, tempo: 60, narrow_ok: 0, narrow_none: 0 };
+pub const DEFAULT_WEIGHTS: Weights = Weights {
+    empty: 4,
+    gap: 3,
+    distance: 40,
+    second_axis: 12,
+    zone: 30,
+    tempo: 60,
+    narrow_ok: 0,
+    narrow_none: 0,
+    deep_wells: true,
+};
 
 pub const UNREACHABLE: i32 = 400;
 
 pub fn remaining_cells(pos: &Position, p: usize) -> i32 {
-    (0..SHAPES).map(|s| pos.inv[p][s] as i32 * SHAPE_SIZES[s] as i32).sum()
+    (0..SHAPES)
+        .map(|s| pos.inv[p][s] as i32 * SHAPE_SIZES[s] as i32)
+        .sum()
 }
 
 const COL_FIRST: u128 = COL0;
@@ -45,7 +58,22 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     // étroite (mono, domino, barre) peut encore s'y loger sans appui latéral.
     let narrow = !occ & (COL0 | ((occ & !COL8) << 1)) & (COL8 | ((occ & !COL0) >> 1)) & FULL;
     let has_narrow = pos.inv[p][0] + pos.inv[p][1] + pos.inv[p][2] > 0;
-    let narrow_cost = if has_narrow { w.narrow_ok } else { w.narrow_none };
+    let narrow_cost = if has_narrow {
+        w.narrow_ok
+    } else {
+        w.narrow_none
+    };
+    // Puits d'au moins deux cases de profondeur : sans pièce étroite, rien ne
+    // peut plus y descendre, la case est perdue pour ce joueur.
+    let mut deep = narrow & (narrow << N);
+    for _ in 0..N {
+        deep |= (deep >> N) & !occ;
+    }
+    let blocked = if has_narrow || !w.deep_wells {
+        blocked
+    } else {
+        blocked | deep
+    };
     // classes[g] : cases vides avec `g` cases vides dessous ; +N si étroites.
     let mut classes = [0u128; K];
     for x in 0..N {
@@ -70,7 +98,14 @@ const BUCKETS: usize = UNREACHABLE as usize + 64;
 
 const K: usize = 2 * N;
 
-fn shortest(own: u128, blocked: u128, classes: &[u128; K], costs: &[i32; K], start: u128, goal: u128) -> i32 {
+fn shortest(
+    own: u128,
+    blocked: u128,
+    classes: &[u128; K],
+    costs: &[i32; K],
+    start: u128,
+    goal: u128,
+) -> i32 {
     let mut buckets = [0u128; BUCKETS];
     buckets[0] = start & own;
     for g in 0..K {
@@ -142,6 +177,36 @@ mod tests {
         let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
         assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
         assert!(tb > lr);
+    }
+
+    #[test]
+    fn deep_well_blocks_player_without_narrow_pieces() {
+        // Fin d'une partie perdue au départage : bleu n'a plus de pièce étroite
+        // et ses chemins ne passent plus que par les puits des colonnes 1, 3 et 9.
+        let pos = parse_record(
+            "4Tr21 4Tr25 3Ir12 2r16 3Ir12 12 2r16 4Sr17 4Lr37 4Lr17 3Lr36 3Lr16 \
+             4Tr34 3Ir18 2r19 4Ss4 4Ss4 2r14 15 13 15",
+        )
+        .unwrap();
+        assert_eq!(pos.inv[BLUE][..3], [0, 0, 0]);
+        let naive = distances(
+            &pos,
+            BLUE,
+            &Weights {
+                deep_wells: false,
+                ..DEFAULT_WEIGHTS
+            },
+        );
+        let aware = distances(
+            &pos,
+            BLUE,
+            &Weights {
+                deep_wells: true,
+                ..DEFAULT_WEIGHTS
+            },
+        );
+        assert!(naive.0 < UNREACHABLE && naive.1 < UNREACHABLE);
+        assert_eq!(aware, (UNREACHABLE, UNREACHABLE));
     }
 
     #[test]
