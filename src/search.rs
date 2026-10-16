@@ -89,7 +89,16 @@ pub struct Searcher {
     deadline: Instant,
     stopped: bool,
     pub weights: Weights,
+    pub options: Options,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    pub lmr: bool,
+    pub eval_order: bool,
+}
+
+pub const DEFAULT_OPTIONS: Options = Options { lmr: true, eval_order: true };
 
 impl Searcher {
     pub fn new(tt_bits: u32) -> Self {
@@ -103,6 +112,7 @@ impl Searcher {
             deadline: Instant::now(),
             stopped: false,
             weights: DEFAULT_WEIGHTS,
+            options: DEFAULT_OPTIONS,
         }
     }
 
@@ -195,27 +205,59 @@ impl Searcher {
         }
 
         self.order(&mut moves, tt_move, ply);
+        let killers = self.killers[ply.min(MAX_PLY - 1)];
+        let mut children: Vec<(Move, Position)> = moves
+            .iter()
+            .map(|&m| {
+                let mut c = *pos;
+                c.play(m).unwrap();
+                (m, c)
+            })
+            .collect();
+        if self.options.eval_order && depth >= 2 {
+            // Le coup de la table reste en tête ; les autres, par évaluation statique.
+            let skip = usize::from(tt_move.is_some());
+            let p = pos.to_move;
+            let w = self.weights;
+            children[skip..].sort_by_cached_key(|(_, c)| {
+                let s = if c.outcome.is_some() {
+                    if c.winner() == Some(p) { MATE } else { 0 }
+                } else {
+                    let e = evaluate(c, &w);
+                    if c.to_move == p { e } else { -e }
+                };
+                -s
+            });
+        }
         let alpha0 = alpha;
         let mut best = -MATE * 2;
         let mut best_move = moves[0];
-        for (i, &m) in moves.iter().enumerate() {
-            let mut child = *pos;
-            child.play(m).unwrap();
+        for (i, (m, child)) in children.iter().enumerate() {
+            let m = *m;
             let same = child.to_move == pos.to_move;
-            let search = |s: &mut Self, a: i32, b: i32| {
+            let search = |s: &mut Self, d: i32, a: i32, b: i32| {
                 if same {
-                    s.negamax(&child, depth - 1, a, b, ply + 1)
+                    s.negamax(child, d, a, b, ply + 1)
                 } else {
-                    -s.negamax(&child, depth - 1, -b, -a, ply + 1)
+                    -s.negamax(child, d, -b, -a, ply + 1)
                 }
+            };
+            let quiet = Some(m) != tt_move && Some(m) != killers[0] && Some(m) != killers[1];
+            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet {
+                if i >= 12 { 2 } else { 1 }
+            } else {
+                0
             };
             let mut score;
             if i == 0 {
-                score = search(self, alpha, beta);
+                score = search(self, depth - 1, alpha, beta);
             } else {
-                score = search(self, alpha, alpha + 1);
+                score = search(self, depth - 1 - reduction, alpha, alpha + 1);
+                if reduction > 0 && score > alpha && !self.stopped {
+                    score = search(self, depth - 1, alpha, alpha + 1);
+                }
                 if score > alpha && score < beta && !self.stopped {
-                    score = search(self, alpha, beta);
+                    score = search(self, depth - 1, alpha, beta);
                 }
             }
             if self.stopped {
