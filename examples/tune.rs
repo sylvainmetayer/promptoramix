@@ -19,6 +19,14 @@ fn loss(data: &[(Position, f64)], w: &Weights, k: f64) -> f64 {
     total / data.len() as f64
 }
 
+/// Constante K de la sigmoïde qui minimise la perte de ces poids.
+fn fit_k(data: &[(Position, f64)], w: &Weights) -> (f64, f64) {
+    (1..80)
+        .map(|i| 0.00005 * i as f64)
+        .map(|c| (c, loss(data, w, c)))
+        .fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a })
+}
+
 type Field = (&'static str, fn(&mut Weights) -> &mut i32, i32, i32);
 
 fn main() {
@@ -39,25 +47,13 @@ fn main() {
         let mut s = linkx_bot::search::Searcher::new(4);
         s.configure(&spec);
         for (name, weights) in [("défaut", DEFAULT_WEIGHTS), ("réglage", s.weights)] {
-            let best = (1..80)
-                .map(|i| 0.00005 * i as f64)
-                .map(|c| (c, loss(&data, &weights, c)))
-                .fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
+            let best = fit_k(&data, &weights);
             println!("{name:<8} K={:.5} perte {:.6}", best.0, best.1);
         }
         return;
     }
-    let mut k = 0.0005;
-    let mut best_k = (k, loss(&data, &w, k));
-    for i in 1..60 {
-        let c = 0.00005 * i as f64;
-        let l = loss(&data, &w, c);
-        if l < best_k.1 {
-            best_k = (c, l);
-        }
-    }
-    k = best_k.0;
-    eprintln!("K = {k:.5}, perte initiale {:.6}", best_k.1);
+    let (k, initial) = fit_k(&data, &w);
+    eprintln!("K = {k:.5}, perte initiale {initial:.6}");
 
     let fields: [Field; 9] = [
         ("empty", |w| &mut w.empty, 1, 12),
@@ -71,7 +67,7 @@ fn main() {
         ("nkeep", |w| &mut w.narrow_keep, 0, 300),
     ];
     let valid = |w: &Weights| (max_step(w) as usize) < RING;
-    let mut current = loss(&data, &w, k);
+    let mut current = initial;
     for round in 0..6 {
         let mut improved = false;
         for (name, field, lo, hi) in fields {
@@ -82,8 +78,10 @@ fn main() {
                     for dir in [step, -step] {
                         let mut t = w;
                         let v = field(&mut t);
-                        *v = (*v + dir).clamp(lo, hi);
-                        if !valid(&t) {
+                        let old = *v;
+                        *v = (old + dir).clamp(lo, hi);
+                        // À une borne, l'essai redonnerait les mêmes poids.
+                        if *v == old || !valid(&t) {
                             continue;
                         }
                         let l = loss(&data, &t, k);

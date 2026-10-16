@@ -381,6 +381,18 @@ mod tests {
     }
 
     #[test]
+    fn default_weights_are_usable() {
+        // Les tests ci-dessus isolent une option sur `HAND_WEIGHTS` : ceux-ci
+        // couvrent les poids réellement livrés.
+        assert!((max_step(&DEFAULT_WEIGHTS) as usize) < RING);
+        let pos = Position::new(BLUE);
+        let (lr, tb) = distances(&pos, BLUE, &DEFAULT_WEIGHTS);
+        assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
+        // `vstep` : une tour coûte autant qu'une rangée.
+        assert_eq!(tb, lr);
+    }
+
+    #[test]
     fn own_floor_row_shortens_distance() {
         let pos = parse_record("3I1 11 3I4").unwrap();
         let (lr, _) = distances(&pos, BLUE, &HAND_WEIGHTS);

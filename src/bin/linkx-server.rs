@@ -18,7 +18,7 @@ use tokio::sync::Semaphore;
 
 use linkx_bot::game::Position;
 use linkx_bot::notation::{format_move, parse_record_lenient};
-use linkx_bot::search::Searcher;
+use linkx_bot::search::{MATE, Searcher};
 
 #[derive(Deserialize)]
 struct MoveRequest {
@@ -59,6 +59,24 @@ struct Games {
     capacity: usize,
     /// Recherches en cours pour de vrais appels : la réflexion leur cède la place.
     active: AtomicUsize,
+    /// Arrêt du service : plus aucune réflexion, pour ne pas retarder la sortie.
+    closing: AtomicBool,
+}
+
+/// Compte une vraie recherche dans `active`, décomptée même en cas de panique.
+struct ActiveSearch<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveSearch<'a> {
+    fn enter(active: &'a AtomicUsize) -> Self {
+        active.fetch_add(1, SeqCst);
+        ActiveSearch(active)
+    }
+}
+
+impl Drop for ActiveSearch<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, SeqCst);
+    }
 }
 
 struct GameSlot {
@@ -80,6 +98,8 @@ struct Slot {
 /// Tranche de réflexion : entre deux tranches, on vérifie qu'aucun appel n'attend.
 const PONDER_SLICE: Duration = Duration::from_millis(300);
 const PONDER_MAX: Duration = Duration::from_secs(15);
+/// Profondeur maximale d'une tranche de réflexion.
+const PONDER_DEPTH: u32 = 64;
 
 impl Games {
     fn new(capacity: usize) -> Self {
@@ -87,7 +107,19 @@ impl Games {
             slots: Mutex::new(HashMap::new()),
             capacity,
             active: AtomicUsize::new(0),
+            closing: AtomicBool::new(false),
         }
+    }
+
+    /// Une vraie recherche ou l'arrêt du service attend : la réflexion s'efface.
+    fn busy(&self) -> bool {
+        self.active.load(SeqCst) != 0 || self.closing.load(SeqCst)
+    }
+
+    /// Arrêt du service : les réflexions en cours s'interrompent aussitôt.
+    fn close(&self) {
+        self.closing.store(true, SeqCst);
+        self.stop_ponders();
     }
 
     fn slots(&self) -> MutexGuard<'_, HashMap<String, GameSlot>> {
@@ -108,12 +140,14 @@ impl Games {
                 pondering: slot.pondering.clone(),
             });
         }
-        if slots.len() >= self.capacity {
-            let oldest = slots
+        // Évincer une entrée occupée est sans danger : qui la tient garde son
+        // `Arc`, et une réflexion s'arrête dès qu'un vrai appel est en cours.
+        if slots.len() >= self.capacity
+            && let Some(oldest) = slots
                 .iter()
-                .filter(|(_, s)| s.searcher.try_lock().is_ok())
                 .min_by_key(|(_, s)| s.last_used)
-                .map(|(k, _)| k.clone())?;
+                .map(|(k, _)| k.clone())
+        {
             slots.remove(&oldest);
         }
         let mut searcher = Searcher::new(TT_BITS);
@@ -162,13 +196,19 @@ fn take<'a>(searcher: &'a Mutex<Searcher>, stop: &AtomicBool) -> MutexGuard<'a, 
 /// Réflexion pendant le tour adverse, sur la position qui suit notre coup.
 fn ponder(config: &Config, slot: &Slot, after: Position) {
     let started = Instant::now();
-    while started.elapsed() < PONDER_MAX && config.games.active.load(SeqCst) == 0 {
+    while started.elapsed() < PONDER_MAX && !config.games.busy() {
         let Ok(mut guard) = slot.searcher.try_lock() else {
             return;
         };
         slot.pondering.store(true, SeqCst);
-        let done = config.games.active.load(SeqCst) != 0
-            || guard.search(&after, PONDER_SLICE, 64).is_none();
+        // Gain immédiat, mat trouvé ou profondeur maximale : une tranche de
+        // plus n'apprendrait rien et tournerait à vide.
+        let done = config.games.busy()
+            || guard
+                .search(&after, PONDER_SLICE, PONDER_DEPTH)
+                .is_none_or(|r| {
+                    r.score.abs() >= MATE - PONDER_DEPTH as i32 || r.depth >= PONDER_DEPTH
+                });
         slot.pondering.store(false, SeqCst);
         if done {
             return;
@@ -292,7 +332,7 @@ async fn play(
         let config = config.clone();
         let game = game.clone();
         let search = tokio::task::spawn_blocking(move || {
-            config.games.active.fetch_add(1, SeqCst);
+            let _active = ActiveSearch::enter(&config.games.active);
             config.games.stop_ponders();
             let slot = if permitted {
                 config.games.slot(&game, &config.tuning, config.threads)
@@ -320,7 +360,6 @@ async fn play(
                     searcher.search(&pos, time, 64)
                 }
             };
-            config.games.active.fetch_sub(1, SeqCst);
             (result, slot)
         });
         let result = search.await;
@@ -388,10 +427,12 @@ async fn main() {
         .await
         .unwrap();
     eprintln!("Promptoramix à l'écoute sur :{port}");
-    axum::serve(listener, app(config))
+    axum::serve(listener, app(config.clone()))
         .with_graceful_shutdown(shutdown())
         .await
         .unwrap();
+    // Sans cela, l'arrêt du runtime attendrait la fin des réflexions (`PONDER_MAX`).
+    config.games.close();
 }
 
 #[cfg(test)]
@@ -431,7 +472,8 @@ mod tests {
             tuning: String::new(),
             searches: Semaphore::new(MAX_SEARCHES),
             games: Games::new(3),
-            ponder: true,
+            // Une réflexion en cours retarde la fin du test jusqu'à `PONDER_MAX`.
+            ponder: false,
         })
     }
 
@@ -515,7 +557,10 @@ mod tests {
 
     #[tokio::test]
     async fn pondering_never_delays_the_next_call() {
-        let config = config(None);
+        let config = Arc::new(Config {
+            ponder: true,
+            ..Arc::into_inner(config(None)).unwrap()
+        });
         let (_, first) = post(
             config.clone(),
             r#"{"game":"p","record":"4Lr35","deadline_ms":2000}"#,
@@ -544,6 +589,7 @@ mod tests {
         );
         assert_legal(&record, &second);
         assert_eq!(config.games.slots().len(), 1);
+        config.games.close();
     }
 
     #[tokio::test]
