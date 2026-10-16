@@ -55,6 +55,15 @@ pub const UNREACHABLE: i32 = 400;
 /// Pièces étroites (mono, domino, barre) : les formes `0..NARROW_SHAPES`.
 pub const NARROW_SHAPES: usize = 3;
 
+/// Le grand L (« 4L ») dans `SHAPE_NAMES`.
+const BIG_L: usize = 6;
+
+/// Coût d'arête le plus élevé (case vide, huit creux dessous, étroite) ; la
+/// file de Dial de `shortest` exige qu'il reste sous `RING`.
+pub fn max_step(w: &Weights) -> i32 {
+    w.empty + w.gap * (N as i32 - 1) + w.narrow_ok.max(w.narrow_none).max(0)
+}
+
 /// Pièces étroites encore en réserve pour `p`.
 fn narrow_held(pos: &Position, p: usize) -> i32 {
     pos.inv[p][..NARROW_SHAPES].iter().map(|&c| c as i32).sum()
@@ -97,7 +106,7 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     // sur le voisin : avec un grand L en réserve, seuls les puits de trois
     // cases et plus sont perdus.
     let mut deep = narrow & (narrow << N);
-    if w.wells3 && pos.inv[p][6] > 0 {
+    if w.wells3 && pos.inv[p][BIG_L] > 0 {
         deep &= narrow << (2 * N);
     }
     for _ in 0..N {
@@ -147,7 +156,7 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
 
 /// File de Dial circulaire : tout coût d'arête est inférieur à `RING`, donc
 /// une case n'écrase jamais un seau pas encore traité.
-const RING: usize = 64;
+pub const RING: usize = 64;
 
 const K: usize = 2 * N;
 

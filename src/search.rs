@@ -128,17 +128,25 @@ fn book_move(pos: &Position, moves: &[Move]) -> Option<Move> {
 }
 
 /// Cache d'évaluation à correspondance directe : les transpositions sont
-/// nombreuses (deux pièces posées dans un ordre ou dans l'autre).
+/// nombreuses (deux pièces posées dans un ordre ou dans l'autre). Jamais plus
+/// grand que la table de transposition, pour les recherches de délestage.
 const EVAL_CACHE_BITS: u32 = 18;
 
-fn eval_cached(cache: &mut [(u64, i32)], w: &Weights, pos: &Position) -> i32 {
-    let key = hash(pos) | 1;
-    let slot = &mut cache[key as usize & ((1 << EVAL_CACHE_BITS) - 1)];
-    if slot.0 == key {
+/// Évaluation statique, via le cache quand `use_cache` (taille puissance de 2).
+fn eval_leaf(cache: &mut [(u64, i32)], use_cache: bool, w: &Weights, pos: &Position) -> i32 {
+    if !use_cache {
+        return evaluate(pos, w);
+    }
+    let h = hash(pos);
+    // L'index prend l'empreinte brute ; l'étiquette force le bit bas pour ne
+    // jamais se confondre avec une case vide `(0, 0)`.
+    let slot = &mut cache[h as usize & (cache.len() - 1)];
+    let tag = h | 1;
+    if slot.0 == tag {
         return slot.1;
     }
     let e = evaluate(pos, w);
-    *slot = (key, e);
+    *slot = (tag, e);
     e
 }
 
@@ -201,7 +209,7 @@ impl Searcher {
             nodes: 0,
             deadline: Instant::now(),
             stopped: false,
-            eval_cache: vec![(0, 0); 1 << EVAL_CACHE_BITS],
+            eval_cache: vec![(0, 0); 1 << tt_bits.min(EVAL_CACHE_BITS)],
             weights: DEFAULT_WEIGHTS,
             options: DEFAULT_OPTIONS,
         }
@@ -241,6 +249,12 @@ impl Searcher {
                 _ => panic!("clé inconnue {k}"),
             }
         }
+        let step = crate::eval::max_step(&s.weights);
+        assert!(
+            step < crate::eval::RING as i32,
+            "coût de case {step} hors de la file de Dial ({})",
+            crate::eval::RING
+        );
     }
 
     fn time_up(&mut self) -> bool {
@@ -265,7 +279,7 @@ impl Searcher {
             nodes: 0,
             deadline: self.deadline,
             stopped: false,
-            eval_cache: vec![(0, 0); 1 << EVAL_CACHE_BITS],
+            eval_cache: vec![(0, 0); self.eval_cache.len()],
             weights: self.weights,
             options: self.options,
         }
@@ -273,7 +287,12 @@ impl Searcher {
 
     /// Coup gagnant immédiat du joueur au trait, s'il existe.
     fn winning_move(pos: &Position, moves: &[Move]) -> Option<Move> {
-        let own = pos.bb[pos.to_move];
+        Self::winning_move_for(pos, pos.to_move, moves)
+    }
+
+    /// Coup gagnant immédiat de `player` parmi `moves` (ses coups légaux).
+    fn winning_move_for(pos: &Position, player: usize, moves: &[Move]) -> Option<Move> {
+        let own = pos.bb[player];
         let mut zones = [0u128; 41];
         let mut count = 0;
         let mut rest = own;
@@ -346,18 +365,17 @@ impl Searcher {
             // suivant : on regarde nos parades plutôt que d'évaluer.
             let mut opp = Vec::with_capacity(160);
             pos.legal_moves_for(1 - pos.to_move, &mut opp);
-            let mut threatened = *pos;
-            threatened.to_move = 1 - pos.to_move;
-            if Self::winning_move(&threatened, &opp).is_some() {
+            if Self::winning_move_for(pos, 1 - pos.to_move, &opp).is_some() {
                 depth = 1;
             }
         }
         if depth <= 0 || ply >= MAX_PLY - 1 {
-            return if self.options.eval_cache {
-                eval_cached(&mut self.eval_cache, &self.weights, pos)
-            } else {
-                evaluate(pos, &self.weights)
-            };
+            return eval_leaf(
+                &mut self.eval_cache,
+                self.options.eval_cache,
+                &self.weights,
+                pos,
+            );
         }
 
         let key = hash(pos);
@@ -400,11 +418,7 @@ impl Searcher {
                 let s = if c.outcome.is_some() {
                     if c.winner() == Some(p) { MATE } else { 0 }
                 } else {
-                    let e = if use_cache {
-                        eval_cached(cache, &w, c)
-                    } else {
-                        evaluate(c, &w)
-                    };
+                    let e = eval_leaf(cache, use_cache, &w, c);
                     if c.to_move == p { e } else { -e }
                 };
                 -s
@@ -702,6 +716,20 @@ mod tests {
         let r = s.search(&pos, Duration::from_millis(300), 64).unwrap();
         let mut p = pos;
         assert!(p.play(r.best).is_ok());
+    }
+
+    #[test]
+    fn book_entries_parse_and_match_the_hash() {
+        // Une empreinte Zobrist modifiée rendrait le livre muet sans erreur.
+        for &(_, token) in crate::book::BOOK {
+            assert!(crate::notation::parse_move(token).is_ok(), "{token}");
+        }
+        for first in [crate::game::BLUE, crate::game::WHITE] {
+            let pos = Position::new(first);
+            let mut moves = Vec::new();
+            pos.legal_moves(&mut moves);
+            assert!(book_move(&pos, &moves).is_some(), "plateau vide, {first}");
+        }
     }
 
     #[test]
