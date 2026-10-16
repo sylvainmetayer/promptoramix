@@ -215,6 +215,13 @@ impl Searcher {
         }
     }
 
+    /// Drapeau d'arrêt de la recherche en cours, utilisable depuis un autre fil.
+    /// `search` le remet à zéro en démarrant : pour interrompre à coup sûr, le
+    /// lever jusqu'à reprendre la main sur le `Searcher`.
+    pub fn stop_handle(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
+
     /// Réglages `clé=valeur,…` (poids d'évaluation et options), pour les bancs d'essai.
     pub fn configure(&mut self, spec: &str) {
         let s = self;

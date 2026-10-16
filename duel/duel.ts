@@ -13,6 +13,8 @@ const arg = (name: string, fallback: number) => {
 const GAMES = arg('--games', 4)
 const OURS_MS = arg('--ours-ms', 4500)
 const HOUSE_MS = arg('--house-ms', 900)
+const serverArg = process.argv.indexOf('--server')
+const SERVER = serverArg >= 0 ? process.argv[serverArg + 1] : null
 const BIN = process.env.LINKX_BIN || new URL('../target/release/linkx-cli', import.meta.url).pathname
 const startIndex = process.argv.indexOf('--start')
 const starts = startIndex >= 0 ? [process.argv[startIndex + 1]] : process.argv.includes('--openings') ? ['', ...OPENINGS.map((o) => o.notation)] : ['']
@@ -45,7 +47,18 @@ for (let g = 0; g < GAMES; g++) {
     if (state.activePlayer === oursColor) {
       const t = Date.now()
       try {
-        move = execFileSync(BIN, [record, '--ms', String(OURS_MS)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+        if (SERVER) {
+          // Comme la plateforme : un appel HTTP par coup, identifié par la partie.
+          const res = await fetch(SERVER, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ protocol: 1, game: `duel-${process.pid}-${g}`, color: oursColor, record, deadline_ms: 6000 }),
+          })
+          if (res.status !== 200) throw new Error(`HTTP ${res.status}`)
+          move = (await res.json()).move
+        } else {
+          move = execFileSync(BIN, [record, '--ms', String(OURS_MS)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+        }
       } catch (e) {
         fault = `crash: ${e}`
         break
