@@ -23,6 +23,8 @@ const ONLY = process.argv.includes('--blue-only') ? 'blue' : process.argv.includ
 let score = { ours: 0, house: 0, draw: 0, fault: 0 }
 const shardArg = process.argv.indexOf('--shard')
 const [SHARD, SHARDS] = shardArg >= 0 ? process.argv[shardArg + 1].split('/').map(Number) : [0, 1]
+// Notre coup le plus lent, vu du client : la plateforme coupe à 6 s.
+let slowest = 0
 for (let g = 0; g < GAMES; g++) {
   if (g % SHARDS !== SHARD) continue
   const start = starts[Math.floor(g / 2) % starts.length]
@@ -63,7 +65,9 @@ for (let g = 0; g < GAMES; g++) {
         fault = `crash: ${e}`
         break
       }
-      if (Date.now() - t > 6000) { fault = `timeout ${Date.now() - t} ms`; break }
+      const dt = Date.now() - t
+      if (dt > slowest) slowest = dt
+      if (dt > 6000) { fault = `timeout ${dt} ms`; break }
     } else {
       const res = chooseBotMove(record, state.activePlayer, HOUSE_MS)
       if (!res.ok) throw new Error(JSON.stringify(res))
@@ -82,4 +86,4 @@ for (let g = 0; g < GAMES; g++) {
     console.log(`#${g + 1} FAUTE ${fault}\n   ${record}`)
   }
 }
-console.log(`\nBilan : nous ${score.ours} · maison ${score.house} · nuls ${score.draw} · fautes ${score.fault}`)
+console.log(`\nBilan : nous ${score.ours} · maison ${score.house} · nuls ${score.draw} · fautes ${score.fault} · coup le plus lent ${slowest} ms`)

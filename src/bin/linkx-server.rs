@@ -227,7 +227,7 @@ impl Config {
     fn from_env() -> Self {
         Config {
             secret: std::env::var("LINKX_SECRET").ok().filter(|s| !s.is_empty()),
-            margin_ms: env_number("LINKX_MARGIN_MS", 1500),
+            margin_ms: env_number("LINKX_MARGIN_MS", 800),
             threads: env_number("LINKX_THREADS", 1).max(1) as usize,
             tuning: std::env::var("LINKX_CONFIG").unwrap_or_default(),
             searches: Semaphore::new(MAX_SEARCHES),
@@ -238,7 +238,11 @@ impl Config {
 
     /// Temps de réflexion : le délai annoncé moins une marge pour le réseau.
     fn budget(&self, deadline_ms: u64) -> Duration {
-        Duration::from_millis(deadline_ms.saturating_sub(self.margin_ms).clamp(100, 5000))
+        Duration::from_millis(
+            deadline_ms
+                .saturating_sub(self.margin_ms)
+                .clamp(100, 10_000),
+        )
     }
 }
 
