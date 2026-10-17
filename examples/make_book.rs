@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use linkx_bot::notation::{format_move, parse_record};
-use linkx_bot::search::{Searcher, hash};
+use linkx_bot::search::Searcher;
 
 const STARTS: [&str; 18] = [
     "", "w", "4Tr24", "4Lr38", "4Lsr15", "4Lr35", "4Lr36", "4Tr23", "4Tr21", "3Lr23", "3Lr28",
@@ -43,8 +43,7 @@ fn main() {
                     eprintln!("{record:<24} -> {mv:<7} prof {} score {}", r.depth, r.score);
                     lines.lock().unwrap()[i] = format!(
                         "    (0x{:016x}, \"{mv}\"), // « {record} », prof. {}\n",
-                        hash(&pos),
-                        r.depth
+                        pos.key, r.depth
                     );
                 }
             });

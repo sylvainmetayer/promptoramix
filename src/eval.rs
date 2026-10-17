@@ -100,20 +100,49 @@ pub fn remaining_cells(pos: &Position, p: usize) -> i32 {
         .sum()
 }
 
-const COL_FIRST: u128 = COL0;
-const COL_LAST: u128 = COL8;
-const ROW_FIRST: u128 = ROW0;
-const ROW_LAST: u128 = ROW8;
+/// Ce que l'évaluation lit du plateau, commun aux deux joueurs.
+pub struct Surface {
+    occ: u128,
+    /// Case vide coincée entre deux cases pleines ou un bord : seule une pièce
+    /// étroite (mono, domino, barre) peut encore s'y loger sans appui latéral.
+    narrow: u128,
+    /// classes[g] : cases vides avec `g` cases vides dessous ; +N si étroites.
+    classes: [u128; K],
+}
+
+impl Surface {
+    pub fn new(pos: &Position) -> Self {
+        let occ = pos.occupied();
+        let narrow = narrow_cells(occ);
+        let mut classes = [0u128; K];
+        for x in 0..N {
+            let surface = 8 - pos.heights[x] as i32;
+            for y in 0..=surface {
+                classes[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
+            }
+        }
+        for g in 0..N {
+            classes[g + N] = classes[g] & narrow;
+            classes[g] &= !narrow;
+        }
+        Surface {
+            occ,
+            narrow,
+            classes,
+        }
+    }
+}
 
 /// Plus court chemin d'un bord à l'opposé pour `p`, sur les deux axes.
 /// Résultat : (gauche-droite, haut-bas), en unités de coût.
 pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
+    distances_on(pos, &Surface::new(pos), p, w)
+}
+
+fn distances_on(pos: &Position, s: &Surface, p: usize, w: &Weights) -> (i32, i32) {
     let own = pos.bb[p];
     let blocked = pos.bb[1 - p];
-    let occ = pos.occupied();
-    // Case vide coincée entre deux cases pleines ou un bord : seule une pièce
-    // étroite (mono, domino, barre) peut encore s'y loger sans appui latéral.
-    let narrow = narrow_cells(occ);
+    let (occ, narrow) = (s.occ, s.narrow);
     let has_narrow = narrow_held(pos, p) > 0;
     let narrow_cost = if has_narrow {
         w.narrow_ok
@@ -137,28 +166,16 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     } else {
         blocked | deep
     };
-    // classes[g] : cases vides avec `g` cases vides dessous ; +N si étroites.
-    let mut classes = [0u128; K];
-    for x in 0..N {
-        let surface = 8 - pos.heights[x] as i32;
-        for y in 0..=surface {
-            classes[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
-        }
-    }
-    for g in 0..N {
-        classes[g + N] = classes[g] & narrow;
-        classes[g] &= !narrow;
-    }
     let costs: [i32; K] = std::array::from_fn(|k| {
         w.empty + w.gap * (k % N) as i32 + if k >= N { narrow_cost } else { 0 }
     });
     // Seules les classes non vides et non bloquées comptent dans la boucle.
     let mut active = [(0u128, 0usize); K];
     let mut n = 0;
-    for k in 0..K {
-        let cells = classes[k] & !blocked;
+    for (&class, &cost) in s.classes.iter().zip(&costs) {
+        let cells = class & !blocked;
         if cells != 0 {
-            active[n] = (cells, (costs[k].max(0) as usize).min(RING - 1));
+            active[n] = (cells, (cost.max(0) as usize).min(RING - 1));
             n += 1;
         }
     }
@@ -168,9 +185,9 @@ pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
     let vstep = w
         .vstep
         .then_some((narrow, to_step(w.empty), to_step(w.empty + narrow_cost)));
-    let lr = shortest(own, blocked, active, vstep, COL_FIRST, COL_LAST);
+    let lr = shortest(own, blocked, active, vstep, COL0, COL8);
     // Du bas vers le haut : `vstep` ne joue qu'en montant.
-    let tb = shortest(own, blocked, active, vstep, ROW_LAST, ROW_FIRST);
+    let tb = shortest(own, blocked, active, vstep, ROW8, ROW0);
     (lr, tb)
 }
 
@@ -238,8 +255,8 @@ fn shortest(
 }
 
 /// Score de connexion de `p` (plus petit = mieux), et s'il a un axe coupé.
-fn connection_score(pos: &Position, p: usize, w: &Weights) -> (i32, bool) {
-    let (lr, tb) = distances(pos, p, w);
+fn connection_score(pos: &Position, s: &Surface, p: usize, w: &Weights) -> (i32, bool) {
+    let (lr, tb) = distances_on(pos, s, p, w);
     let (best, mut other) = if lr <= tb { (lr, tb) } else { (tb, lr) };
     let infeasible = best >= UNREACHABLE || best / w.empty.max(1) > remaining_cells(pos, p);
     // Avant tout plafonnement de `other` : un axe coupé reste coupé.
@@ -263,11 +280,11 @@ fn connection_score(pos: &Position, p: usize, w: &Weights) -> (i32, bool) {
 pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     let p = pos.to_move;
     let q = 1 - p;
-    let (dp, cut_p) = connection_score(pos, p, w);
-    let (dq, cut_q) = connection_score(pos, q, w);
+    let s = Surface::new(pos);
+    let (dp, cut_p) = connection_score(pos, &s, p, w);
+    let (dq, cut_q) = connection_score(pos, &s, q, w);
     let dist = (dq - dp) * w.distance / 16;
-    let occ = pos.occupied();
-    let filled = occ.count_ones() as i32;
+    let filled = s.occ.count_ones() as i32;
     let zones = largest_zone(pos.bb[p]) as i32 - largest_zone(pos.bb[q]) as i32;
     let (held_p, held_q) = (narrow_held(pos, p), narrow_held(pos, q));
     let zone_term = if w.zone_phase && (cut_p || cut_q || held_p == 0 || held_q == 0) {
@@ -278,7 +295,7 @@ pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     };
     let keep = if w.narrow_keep != 0 {
         // Une pièce étroite en réserve vaut d'autant plus qu'il y a de puits.
-        let wells = narrow_cells(occ).count_ones() as i32;
+        let wells = s.narrow.count_ones() as i32;
         (held_p - held_q) * w.narrow_keep * (1 + wells.min(12)) / 4
     } else {
         0
@@ -347,9 +364,11 @@ mod tests {
         // Bleu tient le fond de la colonne 1 à la colonne 6 : son axe gauche-droite
         // est court, l'axe haut-bas lointain.
         let pos = parse_record("3I1 11 3I4 12").unwrap();
-        let plain = connection_score(&pos, BLUE, &HAND_WEIGHTS);
+        let surface = Surface::new(&pos);
+        let plain = connection_score(&pos, &surface, BLUE, &HAND_WEIGHTS);
         let capped = connection_score(
             &pos,
+            &surface,
             BLUE,
             &Weights {
                 cliff: true,

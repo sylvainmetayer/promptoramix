@@ -10,7 +10,6 @@ use std::io::Read;
 
 use linkx_bot::book::BOOK;
 use linkx_bot::notation::parse_record_lenient;
-use linkx_bot::search::hash;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,7 +41,7 @@ fn main() {
         if pos.outcome.is_some() {
             continue;
         }
-        let key = hash(&pos);
+        let key = pos.key;
         if !all && BOOK.iter().any(|(k, _)| *k == key) {
             continue;
         }
