@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use crate::pieces::{SHAPES, orientations};
+use crate::pieces::{SHAPE_SIZES, SHAPES, orientations};
 
 pub const N: usize = 9;
 pub const FULL: u128 = (1u128 << 81) - 1;
@@ -122,6 +122,40 @@ pub fn flood(seed: u128, own: u128) -> u128 {
 
 pub fn spans(zone: u128) -> bool {
     (zone & COL0 != 0 && zone & COL8 != 0) || (zone & ROW0 != 0 && zone & ROW8 != 0)
+}
+
+/// Faux seulement si `p` ne peut gagner d'aucun coup : même en posant les
+/// cases d'une seule pièce n'importe où à trois rangs ou moins au-dessus de la
+/// surface, aucun bord ne rejoint l'opposé.
+pub fn may_win_now(pos: &Position, p: usize) -> bool {
+    // Une pièce tient sur trois colonnes et trois rangs : en connexion à huit
+    // voisins, trois de ses cases (une par colonne, ou par rang) suffisent.
+    let Some(cells) = (0..SHAPES)
+        .filter(|&s| pos.inv[p][s] > 0)
+        .map(|s| SHAPE_SIZES[s].min(3))
+        .max()
+    else {
+        return false;
+    };
+    let own = pos.bb[p];
+    let occ = pos.occupied();
+    // Sans trou sous les pièces, la surface est la case vide au-dessus d'une
+    // pleine ; une pièce n'a pas plus de trois cases de haut.
+    let surface = !occ & (ROW8 | occ >> N) & FULL;
+    let reach = surface | surface >> N | surface >> (2 * N);
+    let joins = |start: u128, goal: u128| {
+        // `zone` : ce que relient `k` cases posées au plus.
+        let mut zone = flood(start, own);
+        for _ in 0..cells {
+            if zone & goal != 0 {
+                return true;
+            }
+            let next = zone | ((spread(zone) | start) & reach);
+            zone = flood(next, own | next);
+        }
+        zone & goal != 0
+    };
+    joins(COL0, COL8) || joins(ROW8, ROW0)
 }
 
 pub fn largest_zone(own: u128) -> u32 {
