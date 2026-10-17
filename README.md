@@ -78,6 +78,17 @@ cargo run --release --example make_book -- 240 8 examples/book_positions.txt
 cargo test --release   # vérifie que chaque entrée du livre est légale
 ```
 
+Hors tournoi, un sparring d'une autre famille que la maison joue le même rôle : `mcts_duel` (UCT,
+simulations guidées par l'évaluation) gagne rarement, mais quand il gagne c'est souvent par une
+réplique que la maison ne joue jamais. `blunders` rejoue une partie et marque « ! » les chutes de
+score vues par une recherche longue ; les positions ainsi relevées dans nos trois premiers coups
+rejoignent `examples/book_positions.txt`.
+
+```bash
+cargo run --release --example mcts_duel -- --ms 300 --mcts-ms 1000 --threads 6 --rounds 3
+cargo run --release --example blunders -- "<notation d'une partie perdue>" white 3000
+```
+
 ## Intégration continue
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`

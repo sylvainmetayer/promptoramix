@@ -2,7 +2,7 @@
 //! Empreinte Zobrist de la position -> coup, en notation canonique.
 
 pub const BOOK: &[(u64, &str)] = &[
-    (0x0c8a10d4b7cc4389, "4Lsr15"), // « 4Lr38 », prof. 12
+    (0x0c8a10d4b7cc4389, "4Lsr15"), // « 4Lr38 », prof. 13
     (0x86ca4260f4d8706a, "3Ir16"),  // « 4Lsr15 », prof. 13
     (0x8c4fd46a7044deea, "3Ir12"),  // « 4Lsr15 4Lsr11 2r16 », prof. 14
     (0x692384aa2deaff28, "3Ir17"),  // « 4Lr36 3Ir16 », prof. 13
@@ -10,16 +10,16 @@ pub const BOOK: &[(u64, &str)] = &[
     (0x2382c6d7297a47ff, "2r16"),   // « 4Lr35 3Ir15 2r16 », prof. 12
     (0xb1af7b91411b06bb, "3Ir16"),  // « 4Lr36 », prof. 13
     (0x842dee59bb0bd2e4, "4Lr38"),  // « 4Lr36 3Ir16 3Ir16 », prof. 13
-    (0x51cea60ad7c34790, "4Lr37"),  // « 4Tr23 », prof. 12
-    (0xde83a63cf7304120, "4Lsr14"), // « 3Lr23 4Lr14 », prof. 13
+    (0x51cea60ad7c34790, "4Lr37"),  // « 4Tr23 », prof. 13
+    (0xde83a63cf7304120, "4Lsr14"), // « 3Lr23 4Lr14 », prof. 14
     (0x7b54ef8bbbc8fd9f, "4Lr38"),  // « 4Tr21 », prof. 12
-    (0x1e41838f9e27ca1a, "3Ir15"),  // « 4Tr21 4Lr35 4Lr38 », prof. 13
+    (0x1e41838f9e27ca1a, "3Ir15"),  // « 4Tr21 4Lr35 4Lr38 », prof. 14
     (0x05aee2843c211fe7, "4Lsr15"), // « 3Lr28 », prof. 11
     (0x83624b21f2ac69f1, "4Lsr11"), // « 3Lr28 4Lr35 4Lr15 », prof. 12
-    (0x3219d594b69d1a58, "4Tr27"),  // « 4Tr22 », prof. 11
+    (0x3219d594b69d1a58, "4Tr27"),  // « 4Tr22 », prof. 12
     (0xdc0b78bca6192afd, "4S1"),    // « 4Tr22 4Lr38 4Lsr15 », prof. 12
     (0x90477b044681e87d, "4Lr25"),  // « 3Ir14 3Ir14 », prof. 12
-    (0x139fe28d59ffd6d4, "4Lr32"),  // « 4Lr38 4Lsr14 4Lsr34 », prof. 13
+    (0x139fe28d59ffd6d4, "4Lr32"),  // « 4Lr38 4Lsr14 4Lsr34 », prof. 14
     (0x1543b001eb48b4a7, "3Ir14"),  // « 4Tr23 4Lr37 4Lr17 », prof. 12
     (0xb67f6f4f9cda1fbe, "4S4"),    // « 4Tr23 4Lr37 4Tr14 », prof. 13
     (0xeb836a65d7abe33d, "3Ir12"),  // « 4Lr38 4Lsr14 4Lsr11 », prof. 14
@@ -30,8 +30,22 @@ pub const BOOK: &[(u64, &str)] = &[
     (0x420cc75c50621376, "4Lr37"),  // « 4Lsr15 3Ir16 4Ssr13 », prof. 13
     (0x01f47f1889411f52, "4Lr31"),  // « 4Lr35 2r15 4Tr27 », prof. 14
     (0xdb2062f97fb83bfb, "3Ir18"),  // « 4Tr21 4Lsr17 4Lsr14 », prof. 13
-    (0x55326caa85dbd08e, "3Ir14"),  // « 3Lr28 4Lsr13 4Lr36 », prof. 13
-    (0x69dfa9770bcaa2d2, "3Ir18"),  // « 4Tr22 4Lsr17 4Lsr15 », prof. 13
-    (0xb2837c9b5bb384a6, "3Ir12"),  // « 3Lr28 4Lr32 4Lr36 », prof. 13
+    (0x55326caa85dbd08e, "3Ir14"),  // « 3Lr28 4Lsr13 4Lr36 », prof. 14
+    (0x69dfa9770bcaa2d2, "3Ir18"),  // « 4Tr22 4Lsr17 4Lsr15 », prof. 14
+    (0xb2837c9b5bb384a6, "3Ir12"),  // « 3Lr28 4Lr32 4Lr36 », prof. 14
     (0x79836f0953288c05, "3Ir12"),  // « 4Lr38 4Lr32 4Tr25 », prof. 14
+    (0xe61481ffcf701bc4, "4Lr38"),  // « 2r15 », prof. 12
+    (0xc2de67fa2ecb81a0, "3Ir12"),  // « 2r15 4Lr32 3Ir15 », prof. 13
+    (0x4cf25b68f7cd6de3, "4Tr13"),  // « 2r15 4Lr32 3Ir15 3Ir12 3Ir12 », prof. 12
+    (0x8ea0adae0e2145c9, "4Lr14"),  // « 3Lr23 », prof. 12
+    (0x4d272f84054543a1, "3Ir16"),  // « 3Lr23 4Lr14 4Lsr14 3Ir13 », prof. 15
+    (0x35ed8405f5ccd8d0, "3Ir11"),  // « 3Lr23 4Lr14 4Lsr14 3Ir13 4Lr33 3Lr26 », prof. 15
+    (0x231f563fa4d9ff65, "3Ir18"),  // « 3Lr23 4Lr38 3Ir14 », prof. 14
+    (0x12a000a91a0041f7, "3Lr26"),  // « 3Lr23 4Lr38 3Ir14 3Ir18 2r18 », prof. 14
+    (0xf2dd609c9709c7cf, "4Lr37"),  // « 4Lsr15 3Ir16 3Ir15 », prof. 14
+    (0xba4521a519f20b28, "4Tr22"),  // « 4Lsr15 3Ir16 3Ir15 4Lsr35 4Tr27 », prof. 7
+    (0x76401413df6f0b45, "4Lr14"),  // « 4Lsr15 3Ir16 4Lsr13 », prof. 14
+    (0x518d1ac7bc04efe5, "4Lr17"),  // « 4Lsr15 3Ir16 4Lsr13 4Lr37 3Ir16 », prof. 15
+    (0x6a26bd910dbd3aa2, "3Ir18"),  // « 4Tr22 4Tr27 3Ir13 », prof. 14
+    (0xbd859f59171bb738, "4Lr16"),  // « 4Tr22 4Tr27 3Ir13 2r13 4Lsr15 », prof. 16
 ];
