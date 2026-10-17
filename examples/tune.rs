@@ -60,11 +60,11 @@ fn main() {
         ("gap", |w| &mut w.gap, 0, 7),
         ("distance", |w| &mut w.distance, 5, 200),
         ("second", |w| &mut w.second_axis, 0, 40),
-        ("zone", |w| &mut w.zone, 0, 300),
+        ("zone", |w| &mut w.zone, 0, 1000),
         ("tempo", |w| &mut w.tempo, -500, 1500),
         ("nok", |w| &mut w.narrow_ok, 0, 30),
         ("nnone", |w| &mut w.narrow_none, 0, 40),
-        ("nkeep", |w| &mut w.narrow_keep, 0, 300),
+        ("nkeep", |w| &mut w.narrow_keep, 0, 1000),
     ];
     let valid = |w: &Weights| (max_step(w) as usize) < RING;
     let mut current = initial;

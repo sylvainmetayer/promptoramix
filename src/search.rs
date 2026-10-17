@@ -190,9 +190,10 @@ pub const DEFAULT_OPTIONS: Options = Options {
     eval_order: true,
     eval_order_depth: 3,
     threat_extension: false,
-    // Désactivé : contre la maison, 44–22 avec le livre, 50–16 sans (68 parties),
-    // des débuts figés qu'elle exploite jusqu'au blocage.
-    book: false,
+    // Livre ciblé sur les ouvertures disputées (recherches de 4 min) : contre la
+    // maison à 3 s, 127 victoires sur 176 avec, 87 sans. L'ancien, qui figeait
+    // aussi nos tout premiers coups, perdait (44–22 contre 50–16).
+    book: true,
     eval_cache: true,
     stop_early: false,
     threads: 1,
@@ -731,11 +732,18 @@ mod tests {
         for &(_, token) in crate::book::BOOK {
             assert!(crate::notation::parse_move(token).is_ok(), "{token}");
         }
-        for first in [crate::game::BLUE, crate::game::WHITE] {
-            let pos = Position::new(first);
+        // Chaque position du livre est notée en commentaire dans `book.rs`.
+        let source = include_str!("book.rs");
+        let records: Vec<&str> = source
+            .lines()
+            .filter_map(|l| Some(l.split_once("« ")?.1.split_once(" »")?.0))
+            .collect();
+        assert_eq!(records.len(), crate::book::BOOK.len());
+        for record in records {
+            let pos = crate::notation::parse_record(record).unwrap();
             let mut moves = Vec::new();
             pos.legal_moves(&mut moves);
-            assert!(book_move(&pos, &moves).is_some(), "plateau vide, {first}");
+            assert!(book_move(&pos, &moves).is_some(), "« {record} »");
         }
     }
 
