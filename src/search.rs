@@ -90,12 +90,6 @@ const EXACT: u8 = 0;
 const LOWER: u8 = 1;
 const UPPER: u8 = 2;
 
-/// Empreinte Zobrist, tenue à jour par la position elle-même.
-#[inline]
-pub fn hash(pos: &Position) -> u64 {
-    pos.key
-}
-
 /// Les scores de mat comptent les demi-coups depuis la racine ; la table les
 /// garde relatifs au nœud, pour qu'une position atteinte à une autre
 /// profondeur relise la bonne distance au mat.
@@ -121,7 +115,7 @@ fn from_tt(score: i32, ply: usize) -> i32 {
 
 /// Coup du livre d'ouverture, s'il couvre cette position et y est légal.
 fn book_move(pos: &Position, moves: &[(Move, u128)]) -> Option<Move> {
-    let key = hash(pos);
+    let key = pos.key;
     let (_, token) = crate::book::BOOK.iter().find(|(k, _)| *k == key)?;
     let m = crate::notation::parse_move(token).ok()?;
     moves.iter().any(|&(l, _)| l == m).then_some(m)
@@ -130,14 +124,14 @@ fn book_move(pos: &Position, moves: &[(Move, u128)]) -> Option<Move> {
 /// Cache d'évaluation à correspondance directe : les transpositions sont
 /// nombreuses (deux pièces posées dans un ordre ou dans l'autre). Jamais plus
 /// grand que la table de transposition, pour les recherches de délestage.
-const EVAL_CACHE_BITS: u32 = 18;
+const EVAL_CACHE_BITS: u32 = 20;
 
 /// Évaluation statique, via le cache quand `use_cache` (taille puissance de 2).
 fn eval_leaf(cache: &mut [(u64, i32)], use_cache: bool, w: &Weights, pos: &Position) -> i32 {
     if !use_cache {
         return evaluate(pos, w);
     }
-    let h = hash(pos);
+    let h = pos.key;
     // L'index prend l'empreinte brute ; l'étiquette force le bit bas pour ne
     // jamais se confondre avec une case vide `(0, 0)`.
     let slot = &mut cache[h as usize & (cache.len() - 1)];
@@ -167,35 +161,26 @@ pub struct Searcher {
 #[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub lmr: bool,
-    /// Ne pas réduire les coups de pièces étroites (mono, domino, barre).
-    pub lmr_spare_narrow: bool,
     pub eval_order: bool,
     /// Profondeur restante minimale pour ordonner par évaluation statique.
     pub eval_order_depth: i32,
-    /// Prolonger d'un demi-coup les feuilles où l'adversaire menace de gagner.
-    pub threat_extension: bool,
     /// Jouer le livre d'ouverture quand il couvre la position.
     pub book: bool,
     /// Mémoriser les évaluations statiques déjà calculées.
     pub eval_cache: bool,
-    /// Ne pas entamer d'itération après le premier tiers du budget.
-    pub stop_early: bool,
     /// Nombre de fils de recherche (Lazy SMP), 1 par défaut.
     pub threads: usize,
 }
 
 pub const DEFAULT_OPTIONS: Options = Options {
     lmr: true,
-    lmr_spare_narrow: false,
     eval_order: true,
     eval_order_depth: 3,
-    threat_extension: false,
     // Livre ciblé sur les ouvertures disputées (recherches de 4 min) : contre la
     // maison à 3 s, 127 victoires sur 176 avec, 87 sans. L'ancien, qui figeait
     // aussi nos tout premiers coups, perdait (44–22 contre 50–16).
     book: true,
     eval_cache: true,
-    stop_early: false,
     threads: 1,
 };
 
@@ -243,16 +228,13 @@ impl Searcher {
                 "lmr" => s.options.lmr = n != 0,
                 "eo" => s.options.eval_order = n != 0,
                 "eod" => s.options.eval_order_depth = n,
-                "threat" => s.options.threat_extension = n != 0,
                 "book" => s.options.book = n != 0,
                 "ecache" => s.options.eval_cache = n != 0,
                 "wells3" => w.wells3 = n != 0,
                 "cliff" => w.cliff = n != 0,
-                "lmrn" => s.options.lmr_spare_narrow = n != 0,
                 "nkeep" => w.narrow_keep = n,
                 "zphase" => w.zone_phase = n != 0,
                 "vstep" => w.vstep = n != 0,
-                "early" => s.options.stop_early = n != 0,
                 "threads" => s.options.threads = n.max(1) as usize,
                 _ => panic!("clé inconnue {k}"),
             }
@@ -365,7 +347,7 @@ impl Searcher {
         // La plupart des feuilles sont loin de tout gain : ni coups à générer
         // ni gain immédiat à chercher, l'évaluation suffit.
         let may_win = may_win_now(pos, pos.to_move);
-        if leaf && !may_win && !self.options.threat_extension {
+        if leaf && !may_win {
             return eval_leaf(
                 &mut self.eval_cache,
                 self.options.eval_cache,
@@ -378,17 +360,7 @@ impl Searcher {
         if may_win && Self::winning_move(pos, &moves).is_some() {
             return MATE - ply as i32 - 1;
         }
-        let mut depth = depth;
-        if depth <= 0 && self.options.threat_extension && ply < MAX_PLY - 2 {
-            // Feuille calme en apparence, mais l'adversaire gagne au coup
-            // suivant : on regarde nos parades plutôt que d'évaluer.
-            let mut opp = Vec::with_capacity(160);
-            pos.legal_drops_for(1 - pos.to_move, &mut opp);
-            if Self::winning_move_for(pos, 1 - pos.to_move, &opp).is_some() {
-                depth = 1;
-            }
-        }
-        if depth <= 0 || ply >= MAX_PLY - 1 {
+        if leaf {
             return eval_leaf(
                 &mut self.eval_cache,
                 self.options.eval_cache,
@@ -397,7 +369,7 @@ impl Searcher {
             );
         }
 
-        let key = hash(pos);
+        let key = pos.key;
         let mut tt_move = None;
         if let Some(e) = self.tt.probe(key) {
             tt_move = e.best;
@@ -465,11 +437,7 @@ impl Searcher {
                 }
             };
             let quiet = Some(m) != tt_move && Some(m) != killers[0] && Some(m) != killers[1];
-            // Les victoires forcées manquées passaient surtout par un domino ou
-            // une barre, rangés tard puis réduits : on les cherche en entier.
-            let narrow_piece =
-                self.options.lmr_spare_narrow && (m.shape as usize) < crate::eval::NARROW_SHAPES;
-            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet && !narrow_piece {
+            let reduction = if self.options.lmr && depth >= 3 && i >= 3 && quiet {
                 if i >= 12 { 2 } else { 1 }
             } else {
                 0
@@ -574,12 +542,12 @@ impl Searcher {
                     scope.spawn(move || {
                         // Un auxiliaire sur deux cherche un cran plus profond que
                         // le fil principal : il remplit la table en avance.
-                        h.iterate(pos, root, max_depth, budget, start, (i % 2) as u32);
+                        h.iterate(pos, root, max_depth, start, (i % 2) as u32);
                         h.nodes
                     })
                 })
                 .collect();
-            let mut r = self.iterate(pos, moves, max_depth, budget, start, 0);
+            let mut r = self.iterate(pos, moves, max_depth, start, 0);
             self.stop.store(true, Relaxed);
             for h in handles {
                 r.nodes += h.join().unwrap_or(0);
@@ -595,7 +563,6 @@ impl Searcher {
         pos: &Position,
         mut moves: Vec<(Move, u128)>,
         max_depth: u32,
-        budget: Duration,
         start: Instant,
         depth_offset: u32,
     ) -> SearchResult {
@@ -662,9 +629,6 @@ impl Searcher {
             scored.sort_by_key(|&(_, s)| -s);
             moves = scored.into_iter().map(|(m, _)| m).collect();
             if alpha.abs() >= MATE - MAX_PLY as i32 {
-                break;
-            }
-            if self.options.stop_early && start.elapsed() * 3 > budget {
                 break;
             }
         }
