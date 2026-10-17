@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
-use crate::game::{Move, Position, drop_mask, flood, spans, spread};
+use crate::game::{Move, Position, flood, spans, spread};
 use crate::pieces::{SHAPES, orientations};
 
 pub const MATE: i32 = 1_000_000;
@@ -120,11 +120,11 @@ fn from_tt(score: i32, ply: usize) -> i32 {
 }
 
 /// Coup du livre d'ouverture, s'il couvre cette position et y est légal.
-fn book_move(pos: &Position, moves: &[Move]) -> Option<Move> {
+fn book_move(pos: &Position, moves: &[(Move, u128)]) -> Option<Move> {
     let key = hash(pos);
     let (_, token) = crate::book::BOOK.iter().find(|(k, _)| *k == key)?;
     let m = crate::notation::parse_move(token).ok()?;
-    moves.contains(&m).then_some(m)
+    moves.iter().any(|&(l, _)| l == m).then_some(m)
 }
 
 /// Cache d'évaluation à correspondance directe : les transpositions sont
@@ -294,12 +294,12 @@ impl Searcher {
     }
 
     /// Coup gagnant immédiat du joueur au trait, s'il existe.
-    fn winning_move(pos: &Position, moves: &[Move]) -> Option<Move> {
+    fn winning_move(pos: &Position, moves: &[(Move, u128)]) -> Option<Move> {
         Self::winning_move_for(pos, pos.to_move, moves)
     }
 
     /// Coup gagnant immédiat de `player` parmi `moves` (ses coups légaux).
-    fn winning_move_for(pos: &Position, player: usize, moves: &[Move]) -> Option<Move> {
+    fn winning_move_for(pos: &Position, player: usize, moves: &[(Move, u128)]) -> Option<Move> {
         let own = pos.bb[player];
         let mut zones = [0u128; 41];
         let mut count = 0;
@@ -310,8 +310,7 @@ impl Searcher {
             count += 1;
             rest &= !z;
         }
-        moves.iter().copied().find(|&m| {
-            let added = drop_mask(&pos.heights, m).unwrap();
+        moves.iter().find_map(|&(m, added)| {
             let touching = spread(added);
             let mut merged = added;
             for &z in &zones[..count] {
@@ -319,13 +318,13 @@ impl Searcher {
                     merged |= z;
                 }
             }
-            spans(merged)
+            spans(merged).then_some(m)
         })
     }
 
-    fn order(&self, moves: &mut [Move], tt_move: Option<Move>, ply: usize) {
+    fn order(&self, moves: &mut [(Move, u128)], tt_move: Option<Move>, ply: usize) {
         let k = self.killers[ply.min(MAX_PLY - 1)];
-        moves.sort_by_cached_key(|m| {
+        moves.sort_by_cached_key(|(m, _)| {
             let mut s = self.history[m.shape as usize][m.orient as usize][m.col as usize] as i64;
             if Some(*m) == tt_move {
                 s += 1 << 40;
@@ -363,7 +362,7 @@ impl Searcher {
             return 0;
         }
         let mut moves = Vec::with_capacity(160);
-        pos.legal_moves(&mut moves);
+        pos.legal_drops_for(pos.to_move, &mut moves);
         if Self::winning_move(pos, &moves).is_some() {
             return MATE - ply as i32 - 1;
         }
@@ -372,7 +371,7 @@ impl Searcher {
             // Feuille calme en apparence, mais l'adversaire gagne au coup
             // suivant : on regarde nos parades plutôt que d'évaluer.
             let mut opp = Vec::with_capacity(160);
-            pos.legal_moves_for(1 - pos.to_move, &mut opp);
+            pos.legal_drops_for(1 - pos.to_move, &mut opp);
             if Self::winning_move_for(pos, 1 - pos.to_move, &opp).is_some() {
                 depth = 1;
             }
@@ -410,9 +409,9 @@ impl Searcher {
         if sort_by_eval {
             children = moves
                 .iter()
-                .map(|&m| {
+                .map(|&(m, added)| {
                     let mut c = *pos;
-                    c.play(m).unwrap();
+                    c.play_drop(m, added);
                     (m, c)
                 })
                 .collect();
@@ -434,14 +433,15 @@ impl Searcher {
         }
         let alpha0 = alpha;
         let mut best = -MATE * 2;
-        let mut best_move = moves[0];
+        let mut best_move = moves[0].0;
         for i in 0..moves.len() {
             let (m, child) = if sort_by_eval {
                 children[i]
             } else {
+                let (m, added) = moves[i];
                 let mut c = *pos;
-                c.play(moves[i]).unwrap();
-                (moves[i], c)
+                c.play_drop(m, added);
+                (m, c)
             };
             let child = &child;
             let same = child.to_move == pos.to_move;
@@ -526,7 +526,7 @@ impl Searcher {
         self.deadline = start + budget;
         self.stop.store(false, Relaxed);
         let mut moves = Vec::new();
-        pos.legal_moves(&mut moves);
+        pos.legal_drops_for(pos.to_move, &mut moves);
         if moves.is_empty() || pos.outcome.is_some() {
             return None;
         }
@@ -581,7 +581,7 @@ impl Searcher {
     fn iterate(
         &mut self,
         pos: &Position,
-        mut moves: Vec<Move>,
+        mut moves: Vec<(Move, u128)>,
         max_depth: u32,
         budget: Duration,
         start: Instant,
@@ -596,7 +596,7 @@ impl Searcher {
             nodes,
             elapsed: start.elapsed(),
         };
-        let mut result = done(moves[0], 0, 0, 0);
+        let mut result = done(moves[0].0, 0, 0, 0);
         // Le décalage ne fait jamais dépasser `max_depth` ni sauter toute
         // itération ; `max_depth == 0` ne cherche rien, comme avant.
         let first = (1 + depth_offset).min(max_depth.max(1));
@@ -604,10 +604,10 @@ impl Searcher {
             let mut alpha = -MATE * 2;
             let beta = MATE * 2;
             let mut iter_best: Option<(Move, i32)> = None;
-            let mut scored: Vec<(Move, i32)> = Vec::with_capacity(moves.len());
-            for (i, &m) in moves.iter().enumerate() {
+            let mut scored: Vec<((Move, u128), i32)> = Vec::with_capacity(moves.len());
+            for (i, &(m, added)) in moves.iter().enumerate() {
                 let mut child = *pos;
-                child.play(m).unwrap();
+                child.play_drop(m, added);
                 let same = child.to_move == pos.to_move;
                 let run = |s: &mut Self, a: i32, b: i32| {
                     if same {
@@ -627,7 +627,7 @@ impl Searcher {
                 if self.stopped {
                     break;
                 }
-                scored.push((m, score));
+                scored.push(((m, added), score));
                 if score > alpha {
                     alpha = score;
                     iter_best = Some((m, score));
@@ -686,7 +686,7 @@ mod tests {
         let mut after = pos;
         after.play(r.best).unwrap();
         let mut replies = Vec::new();
-        after.legal_moves(&mut replies);
+        after.legal_drops_for(after.to_move, &mut replies);
         assert!(
             Searcher::winning_move(&after, &replies).is_none(),
             "{}",
@@ -742,7 +742,7 @@ mod tests {
         for record in records {
             let pos = crate::notation::parse_record(record).unwrap();
             let mut moves = Vec::new();
-            pos.legal_moves(&mut moves);
+            pos.legal_drops_for(pos.to_move, &mut moves);
             assert!(book_move(&pos, &moves).is_some(), "« {record} »");
         }
     }

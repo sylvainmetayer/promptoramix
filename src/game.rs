@@ -206,8 +206,9 @@ impl Position {
         self.bb[0] | self.bb[1]
     }
 
-    pub fn legal_moves_for(&self, player: usize, out: &mut Vec<Move>) {
-        out.clear();
+    /// Appelle `f` pour chaque coup légal de `player` et ses cases ajoutées,
+    /// jusqu'à ce que `f` renvoie `true` ; renvoie alors `true`.
+    fn any_drop(&self, player: usize, mut f: impl FnMut(Move, u128) -> bool) -> bool {
         for shape in 0..SHAPES {
             if self.inv[player][shape] == 0 {
                 continue;
@@ -219,37 +220,40 @@ impl Position {
                         orient: oi as u8,
                         col: col as u8,
                     };
-                    if drop_mask(&self.heights, m).is_ok() {
-                        out.push(m);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn legal_moves(&self, out: &mut Vec<Move>) {
-        self.legal_moves_for(self.to_move, out)
-    }
-
-    pub fn has_move(&self, player: usize) -> bool {
-        for shape in 0..SHAPES {
-            if self.inv[player][shape] == 0 {
-                continue;
-            }
-            for (oi, o) in orientations(shape).iter().enumerate() {
-                for col in 0..=(N - o.width) {
-                    let m = Move {
-                        shape: shape as u8,
-                        orient: oi as u8,
-                        col: col as u8,
-                    };
-                    if drop_mask(&self.heights, m).is_ok() {
+                    if let Ok(added) = drop_mask(&self.heights, m)
+                        && f(m, added)
+                    {
                         return true;
                     }
                 }
             }
         }
         false
+    }
+
+    pub fn legal_moves_for(&self, player: usize, out: &mut Vec<Move>) {
+        out.clear();
+        self.any_drop(player, |m, _| {
+            out.push(m);
+            false
+        });
+    }
+
+    pub fn legal_moves(&self, out: &mut Vec<Move>) {
+        self.legal_moves_for(self.to_move, out)
+    }
+
+    /// Coups légaux avec leurs cases ajoutées, pour `play_drop`.
+    pub fn legal_drops_for(&self, player: usize, out: &mut Vec<(Move, u128)>) {
+        out.clear();
+        self.any_drop(player, |m, added| {
+            out.push((m, added));
+            false
+        });
+    }
+
+    pub fn has_move(&self, player: usize) -> bool {
+        self.any_drop(player, |_, _| true)
     }
 
     /// Joue un coup du joueur au trait, puis applique victoire, passe ou blocage.
@@ -262,9 +266,16 @@ impl Position {
             return Err(Refusal::Exhausted);
         }
         let added = drop_mask(&self.heights, m)?;
+        self.play_drop(m, added);
+        Ok(())
+    }
+
+    /// Joue sans contrôle un coup de `legal_drops_for` de la position courante.
+    #[inline]
+    pub fn play_drop(&mut self, m: Move, added: u128) {
+        let p = self.to_move;
         self.place(p, m.shape as usize, added);
         self.advance(p, added);
-        Ok(())
     }
 
     /// Pose sans contrôle : `added` vient de `drop_mask`.
