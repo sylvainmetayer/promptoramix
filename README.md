@@ -46,7 +46,8 @@ absente, aucune vérification),
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
 (réglages `clé=valeur,…` de l'évaluation, pour les essais), `LINKX_GAMES` (3 : parties dont la
 recherche est gardée d'un appel à l'autre, 0 pour repartir de zéro à chaque coup), `LINKX_PONDER`
-(1 : réflexion pendant le tour adverse, 0 pour la couper).
+(1 : réflexion pendant le tour adverse, 0 pour la couper), `LINKX_JOURNAL` (absent : chemin d'un
+fichier où chaque appel est ajouté, horodaté, en plus de la sortie d'erreur).
 
 ## Banc de duel
 
@@ -59,6 +60,23 @@ node duel.ts --games 34 --openings --ours-ms 4500 --house-ms 900
 ```
 
 L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le banc la reproduit.
+
+## Journal et livre d'ouverture
+
+`src/book.rs` est généré : pour chaque position de `examples/book_positions.txt`, une recherche
+longue fixe le coup, retrouvé en jeu par son empreinte Zobrist. Entre deux rondes du tournoi, les
+parties réelles enrichissent le livre : le serveur consigne chaque appel (`LINKX_JOURNAL`, un volume
+sur flip ; à défaut, `docker logs`), `journal` en tire les positions de nos trois premiers coups que
+le livre ne couvre pas, et `make_book` les analyse.
+
+```bash
+cd ~/Documents/homelab/ansible && mise exec -- ansible flip -b -m fetch \
+  -a "src=/opt/apps/promptoramix/journal/coups.log dest=/tmp/coups.log flat=true"
+cargo run --release --example journal -- 5 < /tmp/coups.log >> examples/book_positions.txt
+sort -u -o examples/book_positions.txt examples/book_positions.txt
+cargo run --release --example make_book -- 240 8 examples/book_positions.txt
+cargo test --release   # vérifie que chaque entrée du livre est légale
+```
 
 ## Intégration continue
 

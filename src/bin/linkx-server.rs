@@ -1,6 +1,8 @@
 //! Service HTTP du tournoi : une seule route, n'importe quel chemin.
 
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -48,6 +50,9 @@ struct Config {
     searches: Semaphore,
     games: Games,
     ponder: bool,
+    /// Fichier où chaque appel est consigné (`LINKX_JOURNAL`), sur un volume
+    /// qui survit aux redéploiements : il nourrit le livre d'ouverture.
+    journal: Option<PathBuf>,
 }
 
 /// Recherches gardées d'un appel à l'autre, par partie (champ `game`) : table
@@ -233,6 +238,10 @@ impl Config {
             searches: Semaphore::new(MAX_SEARCHES),
             games: Games::new(env_number("LINKX_GAMES", 3) as usize),
             ponder: env_number("LINKX_PONDER", 1) != 0,
+            journal: std::env::var("LINKX_JOURNAL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
         }
     }
 
@@ -394,11 +403,32 @@ async fn play(
         Err(_) => (fallback, "délai dépassé, coup de repli".into()),
     };
     let mv = format_move(mv);
-    eprintln!(
+    let line = format!(
         "[{game}] {to_move} « {record} » -> {mv} ({detail}, {} ms)",
         started.elapsed().as_millis()
     );
+    eprintln!("{line}");
+    if let Some(path) = &config.journal {
+        journal(path, &line);
+    }
     reply(StatusCode::OK, json!({ "move": mv }))
+}
+
+/// Ajoute une ligne horodatée au journal des coups. Au mieux : une erreur
+/// d'écriture se signale sur la sortie d'erreur et ne coûte jamais un coup.
+fn journal(path: &Path, line: &str) {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut f| writeln!(f, "{stamp} {line}"));
+    if let Err(e) = written {
+        eprintln!("journal {} : {e}", path.display());
+    }
 }
 
 fn app(config: Arc<Config>) -> Router {
@@ -478,6 +508,7 @@ mod tests {
             games: Games::new(3),
             // Une réflexion en cours retarde la fin du test jusqu'à `PONDER_MAX`.
             ponder: false,
+            journal: None,
         })
     }
 
@@ -560,9 +591,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn journal_records_each_call() {
+        let path = std::env::temp_dir().join(format!("linkx-journal-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut config = config(None);
+        Arc::get_mut(&mut config).unwrap().journal = Some(path.clone());
+        let body =
+            r#"{"protocol":1,"game":"j","color":"white","record":"4Tr22","deadline_ms":1500}"#;
+        let (status, json) = post(config.clone(), body, HeaderMap::new()).await;
+        assert_eq!(status, StatusCode::OK);
+        let mv = json["move"].as_str().unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let line = written.lines().next().expect("une ligne");
+        assert!(
+            line.contains(&format!("[j] white « 4Tr22 » -> {mv} (")),
+            "{line}"
+        );
+        assert!(
+            line.split(' ').next().unwrap().parse::<u64>().is_ok(),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
     async fn pondering_never_delays_the_next_call() {
         let config = Arc::new(Config {
             ponder: true,
+            journal: None,
             ..Arc::into_inner(config(None)).unwrap()
         });
         let (_, first) = post(
