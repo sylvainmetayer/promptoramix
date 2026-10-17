@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
-use crate::game::{Move, Position, flood, spans, spread};
+use crate::game::{Move, Position, flood, may_win_now, spans, spread};
 use crate::pieces::{SHAPES, orientations};
 
 pub const MATE: i32 = 1_000_000;
@@ -361,9 +361,21 @@ impl Searcher {
         if self.time_up() {
             return 0;
         }
+        let leaf = depth <= 0 || ply >= MAX_PLY - 1;
+        // La plupart des feuilles sont loin de tout gain : ni coups à générer
+        // ni gain immédiat à chercher, l'évaluation suffit.
+        let may_win = may_win_now(pos, pos.to_move);
+        if leaf && !may_win && !self.options.threat_extension {
+            return eval_leaf(
+                &mut self.eval_cache,
+                self.options.eval_cache,
+                &self.weights,
+                pos,
+            );
+        }
         let mut moves = Vec::with_capacity(160);
         pos.legal_drops_for(pos.to_move, &mut moves);
-        if Self::winning_move(pos, &moves).is_some() {
+        if may_win && Self::winning_move(pos, &moves).is_some() {
             return MATE - ply as i32 - 1;
         }
         let mut depth = depth;
@@ -692,6 +704,33 @@ mod tests {
             "{}",
             format_move(r.best)
         );
+    }
+
+    #[test]
+    fn may_win_now_never_hides_a_winning_move() {
+        // Le filtre ne doit écarter que des positions sans gain immédiat :
+        // sinon la recherche change, et rate des victoires.
+        let mut seed = 0x0DDB_A11C_AFE5_1234u64;
+        let (mut moves, mut wins) = (Vec::new(), 0);
+        for game in 0..400 {
+            let mut p = Position::new(game % 2);
+            while p.outcome.is_none() {
+                for player in 0..2 {
+                    p.legal_drops_for(player, &mut moves);
+                    if Searcher::winning_move_for(&p, player, &moves).is_some() {
+                        wins += 1;
+                        assert!(may_win_now(&p, player), "{}", p.render());
+                    }
+                }
+                p.legal_drops_for(p.to_move, &mut moves);
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let (m, added) = moves[(seed % moves.len() as u64) as usize];
+                p.play_drop(m, added);
+            }
+        }
+        assert!(wins > 400, "{wins}");
     }
 
     #[test]
