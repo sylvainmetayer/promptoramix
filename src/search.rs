@@ -491,6 +491,9 @@ impl Searcher {
         } else {
             EXACT
         };
+        // La sonde précède le test de gain immédiat : rien ne doit entrer dans
+        // la table sans l'avoir passé.
+        debug_assert!(Self::winning_move(pos, &moves).is_none());
         self.tt.store(
             key,
             Entry {

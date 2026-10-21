@@ -99,6 +99,13 @@ pub fn drop_mask(heights: &[u8; N], m: Move) -> Result<u128, Refusal> {
     Ok((o.mask << col) << (anchor as usize * N))
 }
 
+/// Case vide la plus basse de chaque colonne (aucune pour une colonne
+/// pleine) : sans trou sous les pièces, c'est là que se pose le prochain coup.
+#[inline]
+pub fn surface(occ: u128) -> u128 {
+    !occ & (ROW8 | occ >> N) & FULL
+}
+
 /// Étend un ensemble de cases à ses huit voisines.
 #[inline]
 pub fn spread(s: u128) -> u128 {
@@ -140,9 +147,8 @@ pub fn may_win_now(pos: &Position, p: usize) -> bool {
     };
     let own = pos.bb[p];
     let occ = pos.occupied();
-    // Sans trou sous les pièces, la surface est la case vide au-dessus d'une
-    // pleine ; une pièce n'a pas plus de trois cases de haut.
-    let surface = !occ & (ROW8 | occ >> N) & FULL;
+    // Une pièce n'a pas plus de trois cases de haut.
+    let surface = surface(occ);
     let reach = surface | surface >> N | surface >> (2 * N);
     let joins = |start: u128, goal: u128| {
         // `zone` : ce que relient `k` cases posées au plus.
@@ -264,7 +270,9 @@ impl Position {
             }
             for (oi, o) in orientations(shape).iter().enumerate() {
                 for col in 0..=(N - o.width) {
-                    if ((d1[col] ^ o.dd[0]) & o.dm[0]) | ((d2[col] ^ o.dd[1]) & o.dm[1]) != 0 {
+                    let mismatch =
+                        ((d1[col] ^ o.dd[0]) & o.dm[0]) | ((d2[col] ^ o.dd[1]) & o.dm[1]);
+                    if mismatch != 0 {
                         continue;
                     }
                     let anchor = 8 - h[col] as i32 - o.col_bottom[0] as i32;

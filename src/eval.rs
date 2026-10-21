@@ -1,6 +1,6 @@
 //! Évaluation statique : distance de connexion pondérée par la gravité.
 
-use crate::game::{COL0, COL8, FULL, N, Position, ROW0, ROW8, flood, spread};
+use crate::game::{COL0, COL8, FULL, N, Position, ROW0, ROW8, flood, spread, surface};
 use crate::pieces::{SHAPE_SIZES, SHAPES};
 
 #[derive(Debug, Clone, Copy)]
@@ -114,9 +114,8 @@ impl Surface {
     pub fn new(pos: &Position) -> Self {
         let occ = pos.occupied();
         let narrow = narrow_cells(occ);
-        // Sans trou sous les pièces, la surface d'une colonne est sa case vide
-        // la plus basse ; la classe `g` est la surface décalée de `g` rangs.
-        let surface = !occ & (ROW8 | occ >> N) & FULL;
+        // La classe `g` est la surface décalée de `g` rangs vers le haut.
+        let surface = surface(occ);
         let mut classes = [0u128; K];
         for (g, class) in classes[..N].iter_mut().enumerate() {
             *class = surface >> (g * N);
@@ -157,6 +156,8 @@ impl Zones {
             z.largest = z.largest.max(zone.count_ones());
             rest &= !zone;
         }
+        // Au plus 25 composantes à huit voisins sur 9 × 9 : jamais tronqué.
+        debug_assert!(rest == 0);
         z
     }
 
@@ -460,6 +461,44 @@ mod tests {
         assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
         // `vstep` : une tour coûte autant qu'une rangée.
         assert_eq!(tb, lr);
+    }
+
+    #[test]
+    fn surface_classes_match_column_heights() {
+        // La classe `g` par masque doit être la case `g` rangs au-dessus de la
+        // surface de chaque colonne, comme la lecture colonne par colonne.
+        let mut seed = 0xC1A5_5E5F_ACE5_0001u64;
+        let mut moves = Vec::new();
+        for game in 0..40 {
+            let mut pos = Position::new(game % 2);
+            while pos.outcome.is_none() {
+                let s = Surface::new(&pos);
+                let mut expected = [0u128; N];
+                for x in 0..N {
+                    let surface = 8 - pos.heights[x] as i32;
+                    for y in 0..=surface {
+                        expected[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
+                    }
+                }
+                for (g, &cells) in expected.iter().enumerate() {
+                    assert_eq!(s.classes[g] | s.classes[g + N], cells, "{}", pos.render());
+                    assert_eq!(s.classes[g] & s.narrow, 0);
+                    assert_eq!(s.classes[g + N] & !s.narrow, 0);
+                }
+                for p in 0..2 {
+                    assert_eq!(
+                        Zones::new(pos.bb[p]).largest,
+                        crate::game::largest_zone(pos.bb[p])
+                    );
+                }
+                pos.legal_moves(&mut moves);
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                pos.play(moves[(seed % moves.len() as u64) as usize])
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
