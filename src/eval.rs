@@ -1,6 +1,6 @@
 //! Évaluation statique : distance de connexion pondérée par la gravité.
 
-use crate::game::{COL0, COL8, FULL, N, Position, ROW0, ROW8, largest_zone, spread};
+use crate::game::{COL0, COL8, FULL, N, Position, ROW0, ROW8, flood, spread, surface};
 use crate::pieces::{SHAPE_SIZES, SHAPES};
 
 #[derive(Debug, Clone, Copy)]
@@ -114,12 +114,11 @@ impl Surface {
     pub fn new(pos: &Position) -> Self {
         let occ = pos.occupied();
         let narrow = narrow_cells(occ);
+        // La classe `g` est la surface décalée de `g` rangs vers le haut.
+        let surface = surface(occ);
         let mut classes = [0u128; K];
-        for x in 0..N {
-            let surface = 8 - pos.heights[x] as i32;
-            for y in 0..=surface {
-                classes[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
-            }
+        for (g, class) in classes[..N].iter_mut().enumerate() {
+            *class = surface >> (g * N);
         }
         for g in 0..N {
             classes[g + N] = classes[g] & narrow;
@@ -133,13 +132,47 @@ impl Surface {
     }
 }
 
+/// Zones connexes d'un joueur, calculées une fois par évaluation : `shortest`
+/// y rattache une zone entière d'un coup, et la plus grande sert au départage.
+pub struct Zones {
+    /// Au plus une zone par pièce posée ; 48 couvre même un plateau arbitraire.
+    masks: [u128; 48],
+    count: usize,
+    pub largest: u32,
+}
+
+impl Zones {
+    pub fn new(own: u128) -> Self {
+        let mut z = Zones {
+            masks: [0; 48],
+            count: 0,
+            largest: 0,
+        };
+        let mut rest = own;
+        while rest != 0 && z.count < z.masks.len() {
+            let zone = flood(rest.isolate_lowest_one(), own);
+            z.masks[z.count] = zone;
+            z.count += 1;
+            z.largest = z.largest.max(zone.count_ones());
+            rest &= !zone;
+        }
+        // Au plus 25 composantes à huit voisins sur 9 × 9 : jamais tronqué.
+        debug_assert!(rest == 0);
+        z
+    }
+
+    fn masks(&self) -> &[u128] {
+        &self.masks[..self.count]
+    }
+}
+
 /// Plus court chemin d'un bord à l'opposé pour `p`, sur les deux axes.
 /// Résultat : (gauche-droite, haut-bas), en unités de coût.
 pub fn distances(pos: &Position, p: usize, w: &Weights) -> (i32, i32) {
-    distances_on(pos, &Surface::new(pos), p, w)
+    distances_on(pos, &Surface::new(pos), &Zones::new(pos.bb[p]), p, w)
 }
 
-fn distances_on(pos: &Position, s: &Surface, p: usize, w: &Weights) -> (i32, i32) {
+fn distances_on(pos: &Position, s: &Surface, zones: &Zones, p: usize, w: &Weights) -> (i32, i32) {
     let own = pos.bb[p];
     let blocked = pos.bb[1 - p];
     let (occ, narrow) = (s.occ, s.narrow);
@@ -185,9 +218,10 @@ fn distances_on(pos: &Position, s: &Surface, p: usize, w: &Weights) -> (i32, i32
     let vstep = w
         .vstep
         .then_some((narrow, to_step(w.empty), to_step(w.empty + narrow_cost)));
-    let lr = shortest(own, blocked, active, vstep, COL0, COL8);
+    let zones = zones.masks();
+    let lr = shortest(own, zones, blocked, active, vstep, COL0, COL8);
     // Du bas vers le haut : `vstep` ne joue qu'en montant.
-    let tb = shortest(own, blocked, active, vstep, ROW8, ROW0);
+    let tb = shortest(own, zones, blocked, active, vstep, ROW8, ROW0);
     (lr, tb)
 }
 
@@ -199,6 +233,7 @@ const K: usize = 2 * N;
 
 fn shortest(
     own: u128,
+    zones: &[u128],
     blocked: u128,
     active: &[(u128, usize)],
     vstep: Option<(u128, usize, usize)>,
@@ -227,18 +262,26 @@ fn shortest(
         if cur == 0 {
             continue;
         }
-        loop {
-            let next = cur | (spread(cur) & own & !settled);
-            if next == cur {
-                break;
+        // Les cases propres atteintes rattachent leur zone entière : deux zones
+        // distinctes ne se touchent jamais, une seule passe suffit.
+        let mut reach = spread(cur);
+        let mut merged = false;
+        if reach & own != 0 {
+            for &z in zones {
+                if reach & z != 0 && settled & z == 0 {
+                    cur |= z;
+                    merged = true;
+                }
             }
-            cur = next;
         }
         if cur & goal != 0 {
             return (d as i32).min(UNREACHABLE);
         }
+        if merged {
+            reach = spread(cur);
+        }
         settled |= cur;
-        let mut frontier = spread(cur) & !settled;
+        let mut frontier = reach & !settled;
         if let Some((narrow, step, narrow_step)) = vstep {
             // Posée sur une case du chemin, la case du dessus n'a plus de creux
             // à combler : une tour se compte case par case.
@@ -255,8 +298,14 @@ fn shortest(
 }
 
 /// Score de connexion de `p` (plus petit = mieux), et s'il a un axe coupé.
-fn connection_score(pos: &Position, s: &Surface, p: usize, w: &Weights) -> (i32, bool) {
-    let (lr, tb) = distances_on(pos, s, p, w);
+fn connection_score(
+    pos: &Position,
+    s: &Surface,
+    zones: &Zones,
+    p: usize,
+    w: &Weights,
+) -> (i32, bool) {
+    let (lr, tb) = distances_on(pos, s, zones, p, w);
     let (best, mut other) = if lr <= tb { (lr, tb) } else { (tb, lr) };
     let infeasible = best >= UNREACHABLE || best / w.empty.max(1) > remaining_cells(pos, p);
     // Avant tout plafonnement de `other` : un axe coupé reste coupé.
@@ -281,11 +330,12 @@ pub fn evaluate(pos: &Position, w: &Weights) -> i32 {
     let p = pos.to_move;
     let q = 1 - p;
     let s = Surface::new(pos);
-    let (dp, cut_p) = connection_score(pos, &s, p, w);
-    let (dq, cut_q) = connection_score(pos, &s, q, w);
+    let (zp, zq) = (Zones::new(pos.bb[p]), Zones::new(pos.bb[q]));
+    let (dp, cut_p) = connection_score(pos, &s, &zp, p, w);
+    let (dq, cut_q) = connection_score(pos, &s, &zq, q, w);
     let dist = (dq - dp) * w.distance / 16;
     let filled = s.occ.count_ones() as i32;
-    let zones = largest_zone(pos.bb[p]) as i32 - largest_zone(pos.bb[q]) as i32;
+    let zones = zp.largest as i32 - zq.largest as i32;
     let (held_p, held_q) = (narrow_held(pos, p), narrow_held(pos, q));
     let zone_term = if w.zone_phase && (cut_p || cut_q || held_p == 0 || held_q == 0) {
         // Phase de blocage : le départage aux zones devient l'enjeu.
@@ -365,10 +415,12 @@ mod tests {
         // est court, l'axe haut-bas lointain.
         let pos = parse_record("3I1 11 3I4 12").unwrap();
         let surface = Surface::new(&pos);
-        let plain = connection_score(&pos, &surface, BLUE, &HAND_WEIGHTS);
+        let zones = Zones::new(pos.bb[BLUE]);
+        let plain = connection_score(&pos, &surface, &zones, BLUE, &HAND_WEIGHTS);
         let capped = connection_score(
             &pos,
             &surface,
+            &zones,
             BLUE,
             &Weights {
                 cliff: true,
@@ -409,6 +461,44 @@ mod tests {
         assert_eq!(lr, 9 * DEFAULT_WEIGHTS.empty);
         // `vstep` : une tour coûte autant qu'une rangée.
         assert_eq!(tb, lr);
+    }
+
+    #[test]
+    fn surface_classes_match_column_heights() {
+        // La classe `g` par masque doit être la case `g` rangs au-dessus de la
+        // surface de chaque colonne, comme la lecture colonne par colonne.
+        let mut seed = 0xC1A5_5E5F_ACE5_0001u64;
+        let mut moves = Vec::new();
+        for game in 0..40 {
+            let mut pos = Position::new(game % 2);
+            while pos.outcome.is_none() {
+                let s = Surface::new(&pos);
+                let mut expected = [0u128; N];
+                for x in 0..N {
+                    let surface = 8 - pos.heights[x] as i32;
+                    for y in 0..=surface {
+                        expected[(surface - y) as usize] |= 1u128 << (y as usize * N + x);
+                    }
+                }
+                for (g, &cells) in expected.iter().enumerate() {
+                    assert_eq!(s.classes[g] | s.classes[g + N], cells, "{}", pos.render());
+                    assert_eq!(s.classes[g] & s.narrow, 0);
+                    assert_eq!(s.classes[g + N] & !s.narrow, 0);
+                }
+                for p in 0..2 {
+                    assert_eq!(
+                        Zones::new(pos.bb[p]).largest,
+                        crate::game::largest_zone(pos.bb[p])
+                    );
+                }
+                pos.legal_moves(&mut moves);
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                pos.play(moves[(seed % moves.len() as u64) as usize])
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

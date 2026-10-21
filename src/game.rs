@@ -99,12 +99,20 @@ pub fn drop_mask(heights: &[u8; N], m: Move) -> Result<u128, Refusal> {
     Ok((o.mask << col) << (anchor as usize * N))
 }
 
+/// Case vide la plus basse de chaque colonne (aucune pour une colonne
+/// pleine) : sans trou sous les pièces, c'est là que se pose le prochain coup.
+#[inline]
+pub fn surface(occ: u128) -> u128 {
+    !occ & (ROW8 | occ >> N) & FULL
+}
+
 /// Étend un ensemble de cases à ses huit voisines.
 #[inline]
 pub fn spread(s: u128) -> u128 {
-    let r = s & !COL8;
-    let l = s & !COL0;
-    (s | s << 9 | s >> 9 | r << 1 | r << 10 | r >> 8 | l >> 1 | l >> 10 | l << 8) & FULL
+    // Voisins latéraux d'abord, puis la rangée du dessus et du dessous de ce
+    // trait de trois : quatre décalages au lieu de huit.
+    let h = s | (s & !COL8) << 1 | (s & !COL0) >> 1;
+    (h | h << 9 | h >> 9) & FULL
 }
 
 /// Zone connexe de `own` contenant `seed`.
@@ -139,9 +147,8 @@ pub fn may_win_now(pos: &Position, p: usize) -> bool {
     };
     let own = pos.bb[p];
     let occ = pos.occupied();
-    // Sans trou sous les pièces, la surface est la case vide au-dessus d'une
-    // pleine ; une pièce n'a pas plus de trois cases de haut.
-    let surface = !occ & (ROW8 | occ >> N) & FULL;
+    // Une pièce n'a pas plus de trois cases de haut.
+    let surface = surface(occ);
     let reach = surface | surface >> N | surface >> (2 * N);
     let joins = |start: u128, goal: u128| {
         // `zone` : ce que relient `k` cases posées au plus.
@@ -243,20 +250,42 @@ impl Position {
     /// Appelle `f` pour chaque coup légal de `player` et ses cases ajoutées,
     /// jusqu'à ce que `f` renvoie `true` ; renvoie alors `true`.
     fn any_drop(&self, player: usize, mut f: impl FnMut(Move, u128) -> bool) -> bool {
+        // Une pose tient si chaque colonne de la pièce repose sur la surface :
+        // le dénivelé entre colonnes voisines doit être exactement celui de son
+        // profil (`dd`), et l'ancrage doit rester dans le plateau. Le dénivelé
+        // du plateau est calculé une fois, puis chaque coup se teste en deux
+        // comparaisons au lieu de rejouer `drop_mask`.
+        let h = &self.heights;
+        let mut d1 = [0i8; N];
+        let mut d2 = [0i8; N];
+        for x in 0..N - 1 {
+            d1[x] = h[x + 1] as i8 - h[x] as i8;
+        }
+        for x in 0..N - 2 {
+            d2[x] = h[x + 2] as i8 - h[x] as i8;
+        }
         for shape in 0..SHAPES {
             if self.inv[player][shape] == 0 {
                 continue;
             }
             for (oi, o) in orientations(shape).iter().enumerate() {
                 for col in 0..=(N - o.width) {
+                    let mismatch =
+                        ((d1[col] ^ o.dd[0]) & o.dm[0]) | ((d2[col] ^ o.dd[1]) & o.dm[1]);
+                    if mismatch != 0 {
+                        continue;
+                    }
+                    let anchor = 8 - h[col] as i32 - o.col_bottom[0] as i32;
+                    if anchor < 0 {
+                        continue;
+                    }
+                    let added = (o.mask << col) << (anchor as usize * N);
                     let m = Move {
                         shape: shape as u8,
                         orient: oi as u8,
                         col: col as u8,
                     };
-                    if let Ok(added) = drop_mask(&self.heights, m)
-                        && f(m, added)
-                    {
+                    if f(m, added) {
                         return true;
                     }
                 }
@@ -476,6 +505,46 @@ mod tests {
                     p.play(moves[(seed % moves.len() as u64) as usize]).unwrap();
                 }
                 assert_eq!(p.key, full_hash(&p));
+            }
+        }
+    }
+
+    #[test]
+    fn fast_generation_matches_drop_mask() {
+        // `any_drop` teste la pose par dénivelés ; `drop_mask` reste la référence.
+        let mut seed = 0x5EED_1234_ABCD_0001u64;
+        let mut moves = Vec::new();
+        for game in 0..60 {
+            let mut p = Position::new(game % 2);
+            while p.outcome.is_none() {
+                for player in 0..2 {
+                    p.legal_drops_for(player, &mut moves);
+                    let mut expected = Vec::new();
+                    for shape in 0..SHAPES {
+                        if p.inv[player][shape] == 0 {
+                            continue;
+                        }
+                        for oi in 0..orientations(shape).len() {
+                            for col in 0..N as u8 {
+                                let m = Move {
+                                    shape: shape as u8,
+                                    orient: oi as u8,
+                                    col,
+                                };
+                                if let Ok(added) = drop_mask(&p.heights, m) {
+                                    expected.push((m, added));
+                                }
+                            }
+                        }
+                    }
+                    assert_eq!(moves, expected, "{}", p.render());
+                }
+                p.legal_drops_for(p.to_move, &mut moves);
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let (m, added) = moves[(seed % moves.len() as u64) as usize];
+                p.play_drop(m, added);
             }
         }
     }
