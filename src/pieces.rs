@@ -30,6 +30,11 @@ pub struct Orientation {
     /// Pour chaque colonne de la pièce : plus haute et plus basse case.
     pub col_top: [u8; 4],
     pub col_bottom: [u8; 4],
+    /// Dénivelé que la pose exige entre la colonne d'ancrage et les deux
+    /// suivantes (`col_bottom[0] - col_bottom[c]`), et masque des colonnes
+    /// que la pièce occupe réellement (`-1`) ou non (`0`).
+    pub dd: [i8; 2],
+    pub dm: [i8; 2],
     /// Masque des cases, ancre en (0, 0), index `y * 9 + x`.
     pub mask: u128,
 }
@@ -78,6 +83,12 @@ fn build(cells: Cells, rotation: u8, flipped: bool) -> Orientation {
         col_bottom[x] = col_bottom[x].max(y as u8);
         mask |= 1u128 << (y * 9 + x);
     }
+    let mut dd = [0i8; 2];
+    let mut dm = [0i8; 2];
+    for c in 1..width.min(3) {
+        dd[c - 1] = col_bottom[0] as i8 - col_bottom[c] as i8;
+        dm[c - 1] = -1;
+    }
     Orientation {
         cells,
         width,
@@ -86,6 +97,8 @@ fn build(cells: Cells, rotation: u8, flipped: bool) -> Orientation {
         flipped,
         col_top,
         col_bottom,
+        dd,
+        dm,
         mask,
     }
 }

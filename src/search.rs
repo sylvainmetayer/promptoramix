@@ -294,6 +294,10 @@ impl Searcher {
         }
         moves.iter().find_map(|&(m, added)| {
             let touching = spread(added);
+            // Une pièce seule ne relie jamais deux bords : il lui faut une zone.
+            if touching & own == 0 {
+                return None;
+            }
             let mut merged = added;
             for &z in &zones[..count] {
                 if z & touching != 0 {
@@ -344,23 +348,16 @@ impl Searcher {
             return 0;
         }
         let leaf = depth <= 0 || ply >= MAX_PLY - 1;
-        // La plupart des feuilles sont loin de tout gain : ni coups à générer
-        // ni gain immédiat à chercher, l'évaluation suffit.
-        let may_win = may_win_now(pos, pos.to_move);
-        if leaf && !may_win {
-            return eval_leaf(
-                &mut self.eval_cache,
-                self.options.eval_cache,
-                &self.weights,
-                pos,
-            );
-        }
-        let mut moves = Vec::with_capacity(160);
-        pos.legal_drops_for(pos.to_move, &mut moves);
-        if may_win && Self::winning_move(pos, &moves).is_some() {
-            return MATE - ply as i32 - 1;
-        }
         if leaf {
+            // La plupart des feuilles sont loin de tout gain : ni coups à
+            // générer ni gain immédiat à chercher, l'évaluation suffit.
+            if may_win_now(pos, pos.to_move) {
+                let mut moves = Vec::with_capacity(160);
+                pos.legal_drops_for(pos.to_move, &mut moves);
+                if Self::winning_move(pos, &moves).is_some() {
+                    return MATE - ply as i32 - 1;
+                }
+            }
             return eval_leaf(
                 &mut self.eval_cache,
                 self.options.eval_cache,
@@ -369,6 +366,9 @@ impl Searcher {
             );
         }
 
+        // La table avant la génération des coups : une position qui y figure
+        // n'a jamais de gain immédiat (la recherche aurait répondu avant de
+        // l'y inscrire), sa coupure dispense de générer quoi que ce soit.
         let key = pos.key;
         let mut tt_move = None;
         if let Some(e) = self.tt.probe(key) {
@@ -383,44 +383,51 @@ impl Searcher {
                 }
             }
         }
+        let mut moves = Vec::with_capacity(160);
+        pos.legal_drops_for(pos.to_move, &mut moves);
+        if may_win_now(pos, pos.to_move) && Self::winning_move(pos, &moves).is_some() {
+            return MATE - ply as i32 - 1;
+        }
 
         self.order(&mut moves, tt_move, ply);
         let killers = self.killers[ply.min(MAX_PLY - 1)];
         // Sans tri par évaluation, les enfants sont joués à la demande : une
         // coupure dès les premiers coups évite de jouer tous les autres.
         let sort_by_eval = self.options.eval_order && depth >= self.options.eval_order_depth;
+        // Le coup de la table est joué avant d'évaluer les autres enfants : s'il
+        // coupe, et c'est le cas le plus fréquent, leurs évaluations sont épargnées.
+        let staged = usize::from(sort_by_eval && tt_move.is_some());
+        // `children[j]` est l'enfant de `moves[staged + j]`, trié par évaluation.
         let mut children: Vec<(Move, Position)> = Vec::new();
-        if sort_by_eval {
-            children = moves
-                .iter()
-                .map(|&(m, added)| {
-                    let mut c = *pos;
-                    c.play_drop(m, added);
-                    (m, c)
-                })
-                .collect();
-            // Le coup de la table reste en tête ; les autres, par évaluation statique.
-            let skip = usize::from(tt_move.is_some());
-            let p = pos.to_move;
-            let w = self.weights;
-            let use_cache = self.options.eval_cache;
-            let cache = &mut self.eval_cache;
-            children[skip..].sort_by_cached_key(|(_, c)| {
-                let s = if c.outcome.is_some() {
-                    if c.winner() == Some(p) { MATE } else { 0 }
-                } else {
-                    let e = eval_leaf(cache, use_cache, &w, c);
-                    if c.to_move == p { e } else { -e }
-                };
-                -s
-            });
-        }
         let alpha0 = alpha;
         let mut best = -MATE * 2;
         let mut best_move = moves[0].0;
         for i in 0..moves.len() {
-            let (m, child) = if sort_by_eval {
-                children[i]
+            if sort_by_eval && i == staged {
+                children = moves[staged..]
+                    .iter()
+                    .map(|&(m, added)| {
+                        let mut c = *pos;
+                        c.play_drop(m, added);
+                        (m, c)
+                    })
+                    .collect();
+                let p = pos.to_move;
+                let w = self.weights;
+                let use_cache = self.options.eval_cache;
+                let cache = &mut self.eval_cache;
+                children.sort_by_cached_key(|(_, c)| {
+                    let s = if c.outcome.is_some() {
+                        if c.winner() == Some(p) { MATE } else { 0 }
+                    } else {
+                        let e = eval_leaf(cache, use_cache, &w, c);
+                        if c.to_move == p { e } else { -e }
+                    };
+                    -s
+                });
+            }
+            let (m, child) = if sort_by_eval && i >= staged {
+                children[i - staged]
             } else {
                 let (m, added) = moves[i];
                 let mut c = *pos;
