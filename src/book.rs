@@ -51,8 +51,10 @@ pub const BOOK: &[(u64, &str)] = &[
     (0x4f2deda537f85c9b, "4Lsr14"), // « 4Tr27 » sauf 4Lsr13, score -986, prof. 13
     (0x738b9a53c26d5276, "4Tr21"),  // « 4Tr25 » sauf 4Lsr12, score -1775, prof. 13
     (0x6a67f6371e918156, "14"), // « 4Lr38 4Lsr15 4Lsr35 4Lr33 2r16 3Ir13 13 2r16 17 », score 999986, prof. 14
-    (0xc055f78da60d9907, "2r14"), // « 4Lr34 4Lr36 4Lsr35 4Lsr15 » sauf 3Ir17, score 1611, prof. 16
-    (0x7b7785e91274fae6, "4Tr26"), // « 4Lr34 4Lr31 » sauf 3Ir14, score 1272, prof. 13
+    (0xc055f78da60d9907, "3Ir17"), // « 4Lr34 4Lr36 4Lsr35 4Lsr15 », score 2094, prof. 16
+    (0xd1c2fe983f5cc909, "3Lr35"), // « 4Lr34 4Lr36 4Lsr35 4Lsr15 3Ir17 3Ir12 2r14 3Lr24 » sauf 4Tr34, score 999987, prof. 14
+    (0x7b7785e91274fae6, "3Ir14"), // « 4Lr34 4Lr31 », score 2481, prof. 13
+    (0x40646bc05890b990, "12"), // « 4Lr34 4Lr31 3Ir14 2r14 4Sr15 3Ir11 11 14 » sauf 25, score 5335, prof. 15
     (0x30e4d3a53097d4e3, "4Lsr11"), // « 4Tr24 », score -980, prof. 13
     (0x91ef4548c6c2ce6e, "4Tr27"), // « 4Lr34 3Ir14 3Ir15 4Lsr12 4Lr14 3Lr34 », score 4693, prof. 15
 ];

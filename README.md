@@ -91,6 +91,13 @@ toucher aucune victoire. `wave` signale aussi toute victoire dont un coup change
 livre. Une position qui figure déjà dans `examples/book_positions.txt` se corrige en remplaçant sa
 ligne (`make_book` refuse les doublons).
 
+Ce premier point n'est qu'un point de départ : le comparer, avec `make_book --out`, à la même
+position cherchée sans exclusion. Si le coup écarté y reste le meilleur, l'erreur est plus loin
+dans la partie : `blunders` la situe, et la correction se place sur ce coup-là (vague 1 : contre
+Dagobah, `3Ir14` valait +2 481 et c'est `25`, six coups plus tard, qui perdait). Si toutes les
+réponses y perdent, l'erreur est plus tôt : la correction remonte d'un cran, quitte à toucher des
+victoires que `wave` liste alors.
+
 ```bash
 cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
 cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt

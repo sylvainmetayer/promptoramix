@@ -9,8 +9,8 @@
 //! coup ne touche à aucune victoire. Ces positions sortent sur la sortie
 //! standard au format de `examples/book_positions.txt` (`notation ! coups`, les
 //! coups joués étant écartés), à analyser ensuite par `make_book --keep`.
-//! Une position où le livre joue déjà un autre coup (correction d'une vague
-//! précédente, l'export gardant les anciennes parties) n'est pas répétée, ni
+//! Une position déjà corrigée (le livre quitte ces parties à cet endroit ou
+//! plus loin, l'export gardant les anciennes parties) n'est pas répétée, ni
 //! une position que le livre ne laisse plus atteindre.
 //!
 //! Sur la sortie d'erreur : le bilan, et toute partie gagnée dont un coup
@@ -34,6 +34,9 @@ struct Node {
     /// Parties qui atteignent encore ce nœud : aucun coup du livre plus tôt
     /// dans la partie ne s'écarte de ce qui a été joué.
     reachable: usize,
+    /// Parties non gagnées qui l'atteignent et que le livre ne quitte nulle
+    /// part ensuite : elles se rejoueront telles quelles.
+    uncovered: usize,
 }
 
 fn main() {
@@ -68,6 +71,8 @@ fn main() {
         let mut parent: Option<String> = None;
         // Le livre s'écarte-t-il de cette partie avant le coup courant ?
         let mut diverged = false;
+        // Nœuds atteints avant que le livre ne s'écarte de la partie.
+        let mut reached: Vec<String> = Vec::new();
         for i in lead..words.len() {
             if pos.outcome.is_some() {
                 break;
@@ -92,6 +97,7 @@ fn main() {
                 node.played.insert(played.clone());
                 if !diverged {
                     node.reachable += 1;
+                    reached.push(key.clone());
                 }
                 if node.parent.is_none() {
                     node.parent = parent.clone();
@@ -113,6 +119,13 @@ fn main() {
             if pos.play(m).is_err() {
                 eprintln!("coup illégal : {color} « {record} » ({})", words[i]);
                 break;
+            }
+        }
+        // Une partie non gagnée que le livre ne quitte jamais se rejouera :
+        // chacun de ses nœuds reste à corriger.
+        if issue != "gagne" && !diverged {
+            for key in reached {
+                nodes.get_mut(&key).unwrap().uncovered += 1;
             }
         }
     }
@@ -140,10 +153,10 @@ fn main() {
             eprintln!("inaccessible : {color} « {prefix} », le livre en sort plus tôt");
             continue;
         }
-        // Le livre y joue déjà un autre coup (vague précédente) : la partie
-        // perdue ne se rejouera pas, et sa ligne figure déjà au fichier.
-        if let Some(book) = node.book.as_ref().filter(|b| !node.played.contains(*b)) {
-            eprintln!("déjà corrigée : {color} « {prefix} », livre {book}");
+        // Le livre s'écarte de chaque partie perdue ici ou plus loin (vague
+        // précédente) : elles ne se rejoueront pas, la ligne figure au fichier.
+        if node.uncovered == 0 {
+            eprintln!("déjà corrigée : {color} « {prefix} », ici ou plus loin");
             continue;
         }
         let played: Vec<&str> = node.played.iter().map(String::as_str).collect();
