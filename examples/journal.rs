@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::io::Read;
 
-use linkx_bot::book::BOOK;
 use linkx_bot::notation::parse_record_lenient;
+use linkx_bot::search::in_book;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -41,8 +41,7 @@ fn main() {
         if pos.outcome.is_some() {
             continue;
         }
-        let key = pos.key;
-        if !all && BOOK.iter().any(|(k, _)| *k == key) {
+        if !all && in_book(&pos) {
             continue;
         }
         // Clé canonique : la même position écrite de plusieurs façons se cumule.
