@@ -74,7 +74,7 @@ cd ~/Documents/homelab/ansible && mise exec -- ansible flip -b -m fetch \
   -a "src=/opt/apps/promptoramix/journal/coups.log dest=/tmp/coups.log flat=true"
 cargo run --release --example journal -- 5 < /tmp/coups.log >> examples/book_positions.txt
 sort -u -o examples/book_positions.txt examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep
+cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
 cargo test --release   # vérifie que chaque entrée du livre est légale
 ```
 
@@ -93,7 +93,7 @@ ligne (`make_book` refuse les doublons).
 
 ```bash
 cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep
+cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
 cargo run --release --example wave -- linkx-parties.json > /dev/null   # victoires touchées ?
 ```
 
