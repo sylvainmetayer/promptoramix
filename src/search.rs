@@ -785,27 +785,39 @@ mod tests {
 
     #[test]
     fn book_answers_mirrored_openings() {
-        // `4Tr27` est le miroir de `4Tr21`, au livre : la réponse est le miroir
-        // de la sienne.
+        // `4Tr27` est le miroir de `4Tr21` : même position, vue dans la glace.
         let direct = crate::notation::parse_record("4Tr21").unwrap();
-        let mirrored = crate::notation::parse_record("4Tr27").unwrap();
-        assert_eq!(mirrored, direct.mirrored());
-        let mut moves = Vec::new();
-        direct.legal_drops_for(direct.to_move, &mut moves);
-        let answer = book_move(&direct, &moves).unwrap();
-        mirrored.legal_drops_for(mirrored.to_move, &mut moves);
-        assert_eq!(book_move(&mirrored, &moves), Some(mirror_move(answer)));
-        assert!(in_book(&mirrored));
-        // Chaque entrée du livre, en miroir, donne un coup légal.
+        assert_eq!(
+            crate::notation::parse_record("4Tr27").unwrap(),
+            direct.mirrored()
+        );
+        // Chaque entrée du livre, en miroir, donne un coup légal ; quand le
+        // miroir n'a pas d'entrée propre, c'est le miroir du coup du livre.
         let source = include_str!("book.rs");
+        let mut moves = Vec::new();
+        let mut answered_by_mirror = 0;
         for record in source
             .lines()
             .filter_map(|l| Some(l.split_once("« ")?.1.split_once(" »")?.0))
         {
-            let pos = crate::notation::parse_record(record).unwrap().mirrored();
-            pos.legal_drops_for(pos.to_move, &mut moves);
-            assert!(book_move(&pos, &moves).is_some(), "miroir de « {record} »");
+            let pos = crate::notation::parse_record(record).unwrap();
+            let mirrored = pos.mirrored();
+            mirrored.legal_drops_for(mirrored.to_move, &mut moves);
+            let answer = book_move(&mirrored, &moves);
+            assert!(answer.is_some(), "miroir de « {record} »");
+            assert!(in_book(&mirrored));
+            let own_entry = crate::book::BOOK.iter().any(|&(k, _)| k == mirrored.key);
+            if !own_entry {
+                pos.legal_drops_for(pos.to_move, &mut moves);
+                assert_eq!(
+                    answer,
+                    book_move(&pos, &moves).map(mirror_move),
+                    "« {record} »"
+                );
+                answered_by_mirror += 1;
+            }
         }
+        assert!(answered_by_mirror > 0);
     }
 
     #[test]
