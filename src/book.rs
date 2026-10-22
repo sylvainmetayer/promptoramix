@@ -9,7 +9,7 @@ pub const BOOK: &[(u64, &str)] = &[
     (0xfe9586d0fcde11ab, "4Lsr12"), // « 4Lr35 », prof. 13
     (0x2382c6d7297a47ff, "2r16"),   // « 4Lr35 3Ir15 2r16 », prof. 12
     (0xb1af7b91411b06bb, "3Ir16"),  // « 4Lr36 », prof. 13
-    (0x842dee59bb0bd2e4, "4Lr38"),  // « 4Lr36 3Ir16 3Ir16 », prof. 13
+    (0x842dee59bb0bd2e4, "4Lsr11"), // « 4Lr36 3Ir16 3Ir16 » sauf 4Lr38, score -220, prof. 13
     (0x51cea60ad7c34790, "4Lr37"),  // « 4Tr23 », prof. 13
     (0xde83a63cf7304120, "4Lsr14"), // « 3Lr23 4Lr14 », prof. 14
     (0x7b54ef8bbbc8fd9f, "4Lr38"),  // « 4Tr21 », prof. 12
@@ -48,4 +48,17 @@ pub const BOOK: &[(u64, &str)] = &[
     (0x518d1ac7bc04efe5, "4Lr17"),  // « 4Lsr15 3Ir16 4Lsr13 4Lr37 3Ir16 », prof. 15
     (0x6a26bd910dbd3aa2, "3Ir18"),  // « 4Tr22 4Tr27 3Ir13 », prof. 14
     (0xbd859f59171bb738, "4Lr16"),  // « 4Tr22 4Tr27 3Ir13 2r13 4Lsr15 », prof. 16
+    (0x4f2deda537f85c9b, "4Lsr14"), // « 4Tr27 » sauf 4Lsr13, score -986, prof. 13
+    (0x738b9a53c26d5276, "4Tr21"), // « 4Tr25 » sauf 4Lsr12, score -1775, prof. 13
+    (0x844d348232c93b1c, "3Ir15"), // « 4Tr21 4Lr38 4Lr18 » sauf 4Lr35 4Lsr15, score -5770, prof. 13
+    (0x6ef4b332d26bb3d4, "3Ir15"), // « 4Tr21 4Lr38 4Lsr14 » sauf 3Ir18, score -1681, prof. 14
+    (0x0d11213914ce269c, "2r19"), // « 4Tr24 4Lr38 4Lr18 4Lsr11 2r19 » sauf 3Ir12, score -3477, prof. 16
+    (0x55cff2548ccc09a1, "12"), // « 4Tr24 4Lr38 4Lr18 4Lsr11 3Ir15 » sauf 3Ir12, score -12713, prof. 14
+    (0xa6a61206ecfc3706, "19"), // « 4Tr24 4Lr38 4Lr18 4Lsr11 4Lsr18 » sauf 3Ir12, score -4937, prof. 15
+    (0x89f43941bb8896f8, "2r15"), // « 4Tr24 4Lr38 2r15 3Ir18 2r18 » sauf 3Ir15, score 1771, prof. 14
+    (0xb975026e19342d08, "4Lr37"), // « 4Lsr14 3Ir15 3Ir14 » sauf 4Lr36, score -1786, prof. 14
+    (0x6a67f6371e918156, "14"), // « 4Lr38 4Lsr15 4Lsr35 4Lr33 2r16 3Ir13 13 2r16 17 », score 999986, prof. 14
+    (0xd33673ae163efc0b, "3Lr36"), // « 4Lr34 3Ir14 3Ir15 4Lsr12 4Lr14 3Lr34 3Lr36 4Sr17 » sauf 4Tr26, score -999985, prof. 14
+    (0xc055f78da60d9907, "2r14"), // « 4Lr34 4Lr36 4Lsr35 4Lsr15 » sauf 3Ir17, score 1611, prof. 16
+    (0x7b7785e91274fae6, "4Tr26"), // « 4Lr34 4Lr31 » sauf 3Ir14, score 1272, prof. 13
 ];
