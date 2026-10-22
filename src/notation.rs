@@ -63,8 +63,8 @@ pub fn format_move(m: Move) -> String {
     s
 }
 
-/// Rejoue une notation depuis une partie vierge.
-fn tokens(source: &str) -> impl Iterator<Item = &str> {
+/// Découpe une notation en jetons (espaces, virgules et `+` séparent).
+pub fn tokens(source: &str) -> impl Iterator<Item = &str> {
     source
         .split(|c: char| c.is_whitespace() || c == ',' || c == '+')
         .filter(|t| !t.is_empty())

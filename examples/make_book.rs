@@ -1,11 +1,22 @@
 //! Génère `src/book.rs` : coup de recherche longue pour chaque position de
 //! départ du tournoi (plateau vide pour chaque couleur, ouvertures imposées).
-//!   cargo run --release --example make_book -- 240 8 examples/book_positions.txt
+//!   cargo run --release --example make_book -- 240 8 examples/book_positions.txt [--keep] [--out f]
 //! Les positions sont celles des ouvertures disputées contre la maison (nos deux
-//! premiers coups), relevées dans les journaux de duel.
+//! premiers coups), relevées dans les journaux de duel, puis celles des parties
+//! perdues en tournoi.
+//!
+//! Une ligne du fichier est une notation, éventuellement suivie de `! <coups>` :
+//! ces coups sont écartés de la recherche. C'est ainsi qu'on remplace un coup
+//! qui a perdu contre un adversaire déterministe, qui rejouerait la même partie.
+//!
+//! `--keep` reprend telles quelles les entrées de `src/book.rs` dont la ligne
+//! n'a pas changé, et ne cherche que les nouvelles. `--out` écrit le résultat
+//! ailleurs, pour comparer des corrections sans toucher au livre.
+use std::collections::HashMap;
 use std::time::Duration;
 
-use linkx_bot::notation::{format_move, parse_record};
+use linkx_bot::game::{Move, Position};
+use linkx_bot::notation::{format_move, parse_move, parse_record};
 use linkx_bot::search::Searcher;
 
 const STARTS: [&str; 18] = [
@@ -13,12 +24,36 @@ const STARTS: [&str; 18] = [
     "3Ir15", "4Tr22", "3Ir12", "3Ir17", "3Ir14", "2r15", "3Lr24",
 ];
 
+const BOOK_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/book.rs");
+
+/// Clé d'une entrée : la notation et les coups écartés, tels qu'écrits dans le
+/// commentaire de `book.rs` (`« notation »` puis `sauf …`).
+fn entry_label(record: &str, excluded: &[String]) -> String {
+    if excluded.is_empty() {
+        format!("« {record} »")
+    } else {
+        format!("« {record} » sauf {}", excluded.join(" "))
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let keep = args.iter().any(|a| a == "--keep");
+    // `--out <fichier>` : écrire ailleurs que dans `src/book.rs`, pour comparer.
+    let out_path = args
+        .iter()
+        .position(|a| a == "--out")
+        .map(|i| args.get(i + 1).expect("--out attend un chemin").clone());
+    let args: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, a)| a != "--keep" && a != "--out" && (i == 0 || args[i - 1] != "--out"))
+        .map(|(_, a)| a)
+        .collect();
     let secs: u64 = args.get(1).map_or(60, |s| s.parse().unwrap());
     let workers: usize = args.get(2).map_or(1, |s| s.parse().unwrap());
     // Positions à analyser : un fichier (une notation par ligne) ou les départs du tournoi.
-    let records: Vec<String> = match args.get(3) {
+    let lines: Vec<String> = match args.get(3) {
         Some(path) => std::fs::read_to_string(path)
             .unwrap()
             .lines()
@@ -26,24 +61,98 @@ fn main() {
             .collect(),
         None => STARTS.iter().map(|s| s.to_string()).collect(),
     };
+    let entries: Vec<(String, Vec<String>)> = lines
+        .iter()
+        .map(|line| match line.split_once('!') {
+            Some((record, moves)) => (
+                record.trim().to_string(),
+                moves.split_whitespace().map(str::to_string).collect(),
+            ),
+            None => (line.trim().to_string(), Vec::new()),
+        })
+        .collect();
+    // Deux lignes pour une même position, même écrite autrement : le livre ne
+    // lirait que la première, la correction `!` d'une partie perdue serait
+    // masquée sans un mot. Les coups écartés sont lus ici, avant des heures de
+    // recherche : illisibles, illégaux ou couvrant tous les coups, ils seraient
+    // ignorés et le livre rejouerait le coup perdant.
+    let mut seen = HashMap::new();
+    let parsed: Vec<(Position, Vec<Move>)> = entries
+        .iter()
+        .map(|(record, excluded)| {
+            let pos =
+                parse_record(record).unwrap_or_else(|e| panic!("« {record} » illisible : {e:?}"));
+            if let Some(first) = seen.insert(pos.key, record.as_str()) {
+                panic!("« {record} » et « {first} » sont la même position : n'en garder qu'une");
+            }
+            let mut legal = Vec::new();
+            pos.legal_moves(&mut legal);
+            let excluded: Vec<Move> = excluded
+                .iter()
+                .map(|t| {
+                    let m = parse_move(t)
+                        .unwrap_or_else(|_| panic!("« {record} » : coup écarté {t} illisible"));
+                    assert!(legal.contains(&m), "« {record} » : coup écarté {t} illégal");
+                    m
+                })
+                .collect();
+            assert!(
+                legal.iter().any(|m| !excluded.contains(m)),
+                "« {record} » : tous les coups sont écartés"
+            );
+            (pos, excluded)
+        })
+        .collect();
+    // Entrées déjà calculées, par étiquette, pour `--keep`.
+    // Commentaire d'une entrée : `« notation » [sauf …][, score S], prof. N`.
+    let existing: HashMap<String, String> = if keep {
+        std::fs::read_to_string(BOOK_RS)
+            .unwrap()
+            .lines()
+            .filter_map(|l| {
+                let comment = l.split_once("// ")?.1;
+                let label = comment.rsplit_once(", prof.")?.0;
+                let label = label.rsplit_once(", score").map_or(label, |(l, _)| l);
+                Some((label.to_string(), format!("{l}\n")))
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    let mut out_lines = vec![String::new(); entries.len()];
+    let mut todo = Vec::new();
+    for (i, (record, excluded)) in entries.iter().enumerate() {
+        match existing.get(&entry_label(record, excluded)) {
+            Some(line) => out_lines[i] = line.clone(),
+            None => todo.push(i),
+        }
+    }
+    eprintln!(
+        "{} entrée(s) reprise(s), {} à chercher",
+        entries.len() - todo.len(),
+        todo.len()
+    );
     // Un fil par position : la recherche parallèle ne gagne pas de profondeur.
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let lines = std::sync::Mutex::new(vec![String::new(); records.len()]);
+    let out_lines = std::sync::Mutex::new(out_lines);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
                 loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(record) = records.get(i) else { return };
-                    let pos = parse_record(record).unwrap();
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(&i) = todo.get(k) else { return };
+                    let (record, excluded) = &entries[i];
+                    let (pos, excluded_moves) = &parsed[i];
                     let mut s = Searcher::new(22);
                     s.options.book = false;
-                    let r = s.search(&pos, Duration::from_secs(secs), 64).unwrap();
+                    s.excluded = excluded_moves.clone();
+                    let r = s.search(pos, Duration::from_secs(secs), 64).unwrap();
                     let mv = format_move(r.best);
-                    eprintln!("{record:<24} -> {mv:<7} prof {} score {}", r.depth, r.score);
-                    lines.lock().unwrap()[i] = format!(
-                        "    (0x{:016x}, \"{mv}\"), // « {record} », prof. {}\n",
-                        pos.key, r.depth
+                    let label = entry_label(record, excluded);
+                    eprintln!("{label:<40} -> {mv:<7} prof {} score {}", r.depth, r.score);
+                    out_lines.lock().unwrap()[i] = format!(
+                        "    (0x{:016x}, \"{mv}\"), // {label}, score {}, prof. {}\n",
+                        pos.key, r.score, r.depth
                     );
                 }
             });
@@ -54,9 +163,9 @@ fn main() {
          //! Empreinte Zobrist de la position -> coup, en notation canonique.\n\n\
          pub const BOOK: &[(u64, &str)] = &[\n",
     );
-    for line in lines.into_inner().unwrap() {
+    for line in out_lines.into_inner().unwrap() {
         out.push_str(&line);
     }
     out.push_str("];\n");
-    std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/src/book.rs"), out).unwrap();
+    std::fs::write(out_path.as_deref().unwrap_or(BOOK_RS), out).unwrap();
 }

@@ -74,8 +74,34 @@ cd ~/Documents/homelab/ansible && mise exec -- ansible flip -b -m fetch \
   -a "src=/opt/apps/promptoramix/journal/coups.log dest=/tmp/coups.log flat=true"
 cargo run --release --example journal -- 5 < /tmp/coups.log >> examples/book_positions.txt
 sort -u -o examples/book_positions.txt examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt
+cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
 cargo test --release   # vérifie que chaque entrée du livre est légale
+```
+
+Le livre se lit aussi en miroir gauche-droite, seule symétrie du jeu : une entrée pour `4Tr21`
+répond aussi à `4Tr27`. `--keep` reprend les entrées déjà calculées et ne cherche que les lignes
+nouvelles ou modifiées.
+
+**Après une vague.** La plupart des adversaires sont déterministes, comme nous : une partie perdue
+se rejoue à l'identique la semaine suivante si personne ne change de coup. `wave` lit l'export de
+« Mes parties » (JSON), range nos positions en arbre et sort, pour chaque ligne perdue, le premier
+de nos coups par lequel ne passe aucune partie gagnée, au format `notation ! coups joués`. Une
+ligne `!` écarte ces coups de la recherche de `make_book` : le livre y jouera autre chose, sans
+toucher aucune victoire. `wave` signale aussi toute victoire dont un coup changerait à cause du
+livre. Une position qui figure déjà dans `examples/book_positions.txt` se corrige en remplaçant sa
+ligne (`make_book` refuse les doublons).
+
+Ce premier point n'est qu'un point de départ : le comparer, avec `make_book --out`, à la même
+position cherchée sans exclusion. Si le coup écarté y reste le meilleur, l'erreur est plus loin
+dans la partie : `blunders` la situe, et la correction se place sur ce coup-là (vague 1 : contre
+Dagobah, `3Ir14` valait +2 481 et c'est `25`, six coups plus tard, qui perdait). Si toutes les
+réponses y perdent, l'erreur est plus tôt : la correction remonte d'un cran, quitte à toucher des
+victoires que `wave` liste alors.
+
+```bash
+cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
+cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
+cargo run --release --example wave -- linkx-parties.json > /dev/null   # victoires touchées ?
 ```
 
 Hors tournoi, un sparring d'une autre famille que la maison joue le même rôle : `mcts_duel` (UCT,

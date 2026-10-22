@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use crate::eval::{DEFAULT_WEIGHTS, Weights, evaluate};
-use crate::game::{Move, Position, flood, may_win_now, spans, spread};
+use crate::game::{Move, Position, flood, may_win_now, mirror_move, spans, spread};
 use crate::pieces::{SHAPES, orientations};
 
 pub const MATE: i32 = 1_000_000;
@@ -114,11 +114,26 @@ fn from_tt(score: i32, ply: usize) -> i32 {
 }
 
 /// Coup du livre d'ouverture, s'il couvre cette position et y est légal.
+/// La position miroir est consultée aussi : le livre ne garde qu'un côté de
+/// chaque ouverture symétrique (`4Tr27` se lit comme `4Tr21`).
 fn book_move(pos: &Position, moves: &[(Move, u128)]) -> Option<Move> {
-    let key = pos.key;
-    let (_, token) = crate::book::BOOK.iter().find(|(k, _)| *k == key)?;
-    let m = crate::notation::parse_move(token).ok()?;
+    let m = book_lookup(pos)?;
     moves.iter().any(|&(l, _)| l == m).then_some(m)
+}
+
+/// Coup du livre pour cette position, directement ou par son miroir, sans
+/// contrôle de légalité.
+pub fn book_lookup(pos: &Position) -> Option<Move> {
+    let lookup = |key: u64| {
+        let (_, token) = crate::book::BOOK.iter().find(|(k, _)| *k == key)?;
+        crate::notation::parse_move(token).ok()
+    };
+    lookup(pos.key).or_else(|| lookup(pos.mirrored().key).map(mirror_move))
+}
+
+/// Vrai si le livre couvre la position, directement ou par son miroir.
+pub fn in_book(pos: &Position) -> bool {
+    book_lookup(pos).is_some()
 }
 
 /// Cache d'évaluation à correspondance directe : les transpositions sont
@@ -156,6 +171,9 @@ pub struct Searcher {
     eval_cache: Vec<(u64, i32)>,
     pub weights: Weights,
     pub options: Options,
+    /// Coups écartés à la racine : `make_book` s'en sert pour remplacer un
+    /// coup qui a perdu en tournoi. Ignoré s'il ne restait rien d'autre.
+    pub excluded: Vec<Move>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,6 +216,7 @@ impl Searcher {
             eval_cache: vec![(0, 0); 1 << tt_bits.min(EVAL_CACHE_BITS)],
             weights: DEFAULT_WEIGHTS,
             options: DEFAULT_OPTIONS,
+            excluded: Vec::new(),
         }
     }
 
@@ -272,6 +291,7 @@ impl Searcher {
             eval_cache: vec![(0, 0); self.eval_cache.len()],
             weights: self.weights,
             options: self.options,
+            excluded: Vec::new(),
         }
     }
 
@@ -520,6 +540,9 @@ impl Searcher {
         if moves.is_empty() || pos.outcome.is_some() {
             return None;
         }
+        if moves.iter().any(|(m, _)| !self.excluded.contains(m)) {
+            moves.retain(|(m, _)| !self.excluded.contains(m));
+        }
         if self.options.book
             && let Some(m) = book_move(pos, &moves)
         {
@@ -758,6 +781,59 @@ mod tests {
             pos.legal_drops_for(pos.to_move, &mut moves);
             assert!(book_move(&pos, &moves).is_some(), "« {record} »");
         }
+    }
+
+    #[test]
+    fn book_answers_mirrored_openings() {
+        // `4Tr27` est le miroir de `4Tr21` : même position, vue dans la glace.
+        let direct = crate::notation::parse_record("4Tr21").unwrap();
+        assert_eq!(
+            crate::notation::parse_record("4Tr27").unwrap(),
+            direct.mirrored()
+        );
+        // Chaque entrée du livre, en miroir, donne un coup légal ; quand le
+        // miroir n'a pas d'entrée propre, c'est le miroir du coup du livre.
+        let source = include_str!("book.rs");
+        let mut moves = Vec::new();
+        let mut answered_by_mirror = 0;
+        for record in source
+            .lines()
+            .filter_map(|l| Some(l.split_once("« ")?.1.split_once(" »")?.0))
+        {
+            let pos = crate::notation::parse_record(record).unwrap();
+            let mirrored = pos.mirrored();
+            mirrored.legal_drops_for(mirrored.to_move, &mut moves);
+            let answer = book_move(&mirrored, &moves);
+            assert!(answer.is_some(), "miroir de « {record} »");
+            assert!(in_book(&mirrored));
+            let own_entry = crate::book::BOOK.iter().any(|&(k, _)| k == mirrored.key);
+            if !own_entry {
+                pos.legal_drops_for(pos.to_move, &mut moves);
+                assert_eq!(
+                    answer,
+                    book_move(&pos, &moves).map(mirror_move),
+                    "« {record} »"
+                );
+                answered_by_mirror += 1;
+            }
+        }
+        assert!(answered_by_mirror > 0);
+    }
+
+    #[test]
+    fn excluded_moves_are_never_chosen() {
+        // Bleu gagne d'un coup en 4Lr27 : écarté, la recherche joue autre chose.
+        let pos = parse_record("3I1 11 3I4 12").unwrap();
+        let mut s = Searcher::new(16);
+        let win = s.search(&pos, Duration::from_millis(300), 4).unwrap().best;
+        s.excluded = vec![win];
+        let other = s.search(&pos, Duration::from_millis(300), 4).unwrap().best;
+        assert_ne!(other, win);
+        // Tout écarter revient à ne rien écarter.
+        let mut all = Vec::new();
+        pos.legal_moves(&mut all);
+        s.excluded = all;
+        assert!(s.search(&pos, Duration::from_millis(300), 4).is_some());
     }
 
     #[test]

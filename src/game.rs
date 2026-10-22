@@ -106,6 +106,38 @@ pub fn surface(occ: u128) -> u128 {
     !occ & (ROW8 | occ >> N) & FULL
 }
 
+/// Cases renvoyées par un miroir gauche-droite : la colonne `x` passe en `8 - x`.
+pub fn mirror_cells(cells: u128) -> u128 {
+    let mut out = 0u128;
+    for x in 0..N {
+        let column = (cells >> x) & COL0;
+        out |= column << (N - 1 - x);
+    }
+    out
+}
+
+/// Le coup qui, joué sur la position miroir, pose les cases miroirs.
+pub fn mirror_move(m: Move) -> Move {
+    let shape = m.shape as usize;
+    let o = &orientations(shape)[m.orient as usize];
+    let w = o.width as i32;
+    let cells = crate::pieces::normalize(
+        &o.cells
+            .iter()
+            .map(|&(x, y)| (w - 1 - x, y))
+            .collect::<Vec<_>>(),
+    );
+    let orient = orientations(shape)
+        .iter()
+        .position(|c| c.cells == cells)
+        .expect("toute orientation a son miroir parmi celles de sa forme");
+    Move {
+        shape: m.shape,
+        orient: orient as u8,
+        col: (N - o.width) as u8 - m.col,
+    }
+}
+
 /// Étend un ensemble de cases à ses huit voisines.
 #[inline]
 pub fn spread(s: u128) -> u128 {
@@ -245,6 +277,17 @@ impl Position {
 
     pub fn occupied(&self) -> u128 {
         self.bb[0] | self.bb[1]
+    }
+
+    /// La même position vue dans un miroir gauche-droite, seule symétrie du
+    /// jeu : la gravité interdit le haut-bas, et les réserves restent celles
+    /// de chaque joueur.
+    pub fn mirrored(&self) -> Self {
+        let mut m = *self;
+        m.bb = [mirror_cells(self.bb[0]), mirror_cells(self.bb[1])];
+        m.heights.reverse();
+        m.key = full_hash(&m);
+        m
     }
 
     /// Appelle `f` pour chaque coup légal de `player` et ses cases ajoutées,
@@ -545,6 +588,36 @@ mod tests {
                 seed ^= seed << 17;
                 let (m, added) = moves[(seed % moves.len() as u64) as usize];
                 p.play_drop(m, added);
+            }
+        }
+    }
+
+    #[test]
+    fn mirror_commutes_with_play() {
+        // Jouer un coup puis tout refléter, ou refléter puis jouer le coup
+        // miroir, mène à la même position : même empreinte, même issue.
+        let mut seed = 0xFACE_0FF1_CE00_0001u64;
+        let mut moves = Vec::new();
+        for game in 0..60 {
+            let mut p = Position::new(game % 2);
+            assert_eq!(p.mirrored(), p);
+            while p.outcome.is_none() {
+                p.legal_moves(&mut moves);
+                let mut mirrored = Vec::new();
+                p.mirrored().legal_moves(&mut mirrored);
+                let mut expected: Vec<Move> = moves.iter().map(|&m| mirror_move(m)).collect();
+                expected.sort_by_key(|m| (m.shape, m.orient, m.col));
+                mirrored.sort_by_key(|m| (m.shape, m.orient, m.col));
+                assert_eq!(mirrored, expected, "{}", p.render());
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let m = moves[(seed % moves.len() as u64) as usize];
+                assert_eq!(mirror_move(mirror_move(m)), m);
+                let mut reflected = p.mirrored();
+                reflected.play(mirror_move(m)).unwrap();
+                p.play(m).unwrap();
+                assert_eq!(reflected, p.mirrored(), "{}", p.render());
             }
         }
     }
