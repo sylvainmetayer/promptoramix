@@ -1,6 +1,6 @@
 //! Génère `src/book.rs` : coup de recherche longue pour chaque position de
 //! départ du tournoi (plateau vide pour chaque couleur, ouvertures imposées).
-//!   cargo run --release --example make_book -- 240 8 examples/book_positions.txt [--keep]
+//!   cargo run --release --example make_book -- 240 8 examples/book_positions.txt [--keep] [--out f]
 //! Les positions sont celles des ouvertures disputées contre la maison (nos deux
 //! premiers coups), relevées dans les journaux de duel, puis celles des parties
 //! perdues en tournoi.
@@ -10,7 +10,8 @@
 //! qui a perdu contre un adversaire déterministe, qui rejouerait la même partie.
 //!
 //! `--keep` reprend telles quelles les entrées de `src/book.rs` dont la ligne
-//! n'a pas changé, et ne cherche que les nouvelles.
+//! n'a pas changé, et ne cherche que les nouvelles. `--out` écrit le résultat
+//! ailleurs, pour comparer des corrections sans toucher au livre.
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -37,7 +38,17 @@ fn entry_label(record: &str, excluded: &[String]) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let keep = args.iter().any(|a| a == "--keep");
-    let args: Vec<&String> = args.iter().filter(|a| *a != "--keep").collect();
+    // `--out <fichier>` : écrire ailleurs que dans `src/book.rs`, pour comparer.
+    let out_path = args
+        .iter()
+        .position(|a| a == "--out")
+        .map(|i| args[i + 1].clone());
+    let args: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, a)| a != "--keep" && a != "--out" && (i == 0 || args[i - 1] != "--out"))
+        .map(|(_, a)| a)
+        .collect();
     let secs: u64 = args.get(1).map_or(60, |s| s.parse().unwrap());
     let workers: usize = args.get(2).map_or(1, |s| s.parse().unwrap());
     // Positions à analyser : un fichier (une notation par ligne) ou les départs du tournoi.
@@ -135,5 +146,5 @@ fn main() {
         out.push_str(&line);
     }
     out.push_str("];\n");
-    std::fs::write(BOOK_RS, out).unwrap();
+    std::fs::write(out_path.as_deref().unwrap_or(BOOK_RS), out).unwrap();
 }
