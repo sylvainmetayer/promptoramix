@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use linkx_bot::game::{Move, Position};
 use linkx_bot::notation::{format_move, parse_move, parse_record};
 use linkx_bot::search::Searcher;
 
@@ -42,7 +43,7 @@ fn main() {
     let out_path = args
         .iter()
         .position(|a| a == "--out")
-        .map(|i| args[i + 1].clone());
+        .map(|i| args.get(i + 1).expect("--out attend un chemin").clone());
     let args: Vec<&String> = args
         .iter()
         .enumerate()
@@ -70,15 +71,38 @@ fn main() {
             None => (line.trim().to_string(), Vec::new()),
         })
         .collect();
-    // Deux lignes pour une même position : le livre ne lirait que la première,
-    // la correction `!` d'une partie perdue serait masquée sans un mot.
-    let mut seen = std::collections::HashSet::new();
-    for (record, _) in &entries {
-        assert!(
-            seen.insert(record.as_str()),
-            "« {record} » figure deux fois : remplacer l'ancienne ligne"
-        );
-    }
+    // Deux lignes pour une même position, même écrite autrement : le livre ne
+    // lirait que la première, la correction `!` d'une partie perdue serait
+    // masquée sans un mot. Les coups écartés sont lus ici, avant des heures de
+    // recherche : illisibles, illégaux ou couvrant tous les coups, ils seraient
+    // ignorés et le livre rejouerait le coup perdant.
+    let mut seen = HashMap::new();
+    let parsed: Vec<(Position, Vec<Move>)> = entries
+        .iter()
+        .map(|(record, excluded)| {
+            let pos =
+                parse_record(record).unwrap_or_else(|e| panic!("« {record} » illisible : {e:?}"));
+            if let Some(first) = seen.insert(pos.key, record.as_str()) {
+                panic!("« {record} » et « {first} » sont la même position : n'en garder qu'une");
+            }
+            let mut legal = Vec::new();
+            pos.legal_moves(&mut legal);
+            let excluded: Vec<Move> = excluded
+                .iter()
+                .map(|t| {
+                    let m = parse_move(t)
+                        .unwrap_or_else(|_| panic!("« {record} » : coup écarté {t} illisible"));
+                    assert!(legal.contains(&m), "« {record} » : coup écarté {t} illégal");
+                    m
+                })
+                .collect();
+            assert!(
+                legal.iter().any(|m| !excluded.contains(m)),
+                "« {record} » : tous les coups sont écartés"
+            );
+            (pos, excluded)
+        })
+        .collect();
     // Entrées déjà calculées, par étiquette, pour `--keep`.
     // Commentaire d'une entrée : `« notation » [sauf …][, score S], prof. N`.
     let existing: HashMap<String, String> = if keep {
@@ -118,14 +142,11 @@ fn main() {
                     let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(&i) = todo.get(k) else { return };
                     let (record, excluded) = &entries[i];
-                    let pos = parse_record(record).unwrap();
+                    let (pos, excluded_moves) = &parsed[i];
                     let mut s = Searcher::new(22);
                     s.options.book = false;
-                    s.excluded = excluded
-                        .iter()
-                        .map(|t| parse_move(t).expect("coup écarté illisible"))
-                        .collect();
-                    let r = s.search(&pos, Duration::from_secs(secs), 64).unwrap();
+                    s.excluded = excluded_moves.clone();
+                    let r = s.search(pos, Duration::from_secs(secs), 64).unwrap();
                     let mv = format_move(r.best);
                     let label = entry_label(record, excluded);
                     eprintln!("{label:<40} -> {mv:<7} prof {} score {}", r.depth, r.score);
