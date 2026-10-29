@@ -60,6 +60,13 @@ node duel.ts --games 34 --openings --ours-ms 4500 --house-ms 900
 ```
 
 L'IA de la maison du tournoi cherche 900 ms par coup (`searchQueue.ts`) ; le banc la reproduit.
+`clones.ts` mesure, sur l'export « Mes parties », la part des coups de chaque adversaire que la
+maison aurait joués : un clone se battrait hors ligne. Vague 2 : de 14 à 80 %, aucun clone, et les
+adversaires qui nous battent en blanc sont parmi les moins proches (23 à 36 %).
+
+```bash
+node clones.ts linkx-parties.json --shard 0/3   # trois éclats en parallèle
+```
 
 ## Journal et livre d'ouverture
 
@@ -97,6 +104,12 @@ dans la partie : `blunders` la situe, et la correction se place sur ce coup-là 
 Dagobah, `3Ir14` valait +2 481 et c'est `25`, six coups plus tard, qui perdait). Si toutes les
 réponses y perdent, l'erreur est plus tôt : la correction remonte d'un cran, quitte à toucher des
 victoires que `wave` liste alors.
+
+Remonter d'un cran se paie : `wave` compare, dans chaque position, le bilan de nos coups sur toutes
+les vagues exportées et signale « livre moins bon » quand le coup du livre a fait moins bien qu'un
+autre. Vague 2 : contre `4Tr21`, `4Lr37` (correction de la vague 1) fait 1-8 là où `4Lr38` faisait
+2-5 ; on est revenu à `4Lr38` et la correction est redescendue au coup suivant. Quand la recherche
+juge la position perdue quel que soit le coup, le bilan réel départage mieux que le score.
 
 ```bash
 cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
