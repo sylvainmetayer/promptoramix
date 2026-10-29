@@ -18,7 +18,7 @@
 //! victoire mérite d'être regardé avant la vague suivante), et toute position où
 //! le coup du livre a fait moins bien qu'un autre de nos coups (victoire = 1,
 //! nul = 1/2, défaite = 0, gagnées-perdues-nulles à côté de chaque coup).
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use linkx_bot::notation::{format_move, parse_move, parse_record, tokens};
 use linkx_bot::search::book_lookup;
@@ -29,8 +29,8 @@ struct Node {
     won: usize,
     lost: usize,
     drawn: usize,
-    played: BTreeSet<String>,
-    /// Bilan de chacun de nos coups dans cette position : gagnées, perdues, nulles.
+    /// Nos coups joués dans cette position, et le bilan de chacun : gagnées,
+    /// perdues, nulles.
     by_move: BTreeMap<String, [usize; 3]>,
     parent: Option<String>,
     /// Coup que le livre joue aujourd'hui dans cette position.
@@ -107,7 +107,6 @@ fn main() {
                         2
                     }
                 };
-                node.played.insert(played.clone());
                 node.by_move.entry(played.clone()).or_default()[slot] += 1;
                 if !diverged {
                     node.reachable += 1;
@@ -176,7 +175,7 @@ fn main() {
             eprintln!("déjà corrigée : {color} « {prefix} », ici ou plus loin");
             continue;
         }
-        let played: Vec<&str> = node.played.iter().map(String::as_str).collect();
+        let played: Vec<&str> = node.by_move.keys().map(String::as_str).collect();
         eprintln!(
             "à corriger : {color} « {prefix} » joué {} ({} perdue(s), {} nulle(s))",
             played.join(", "),
