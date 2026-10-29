@@ -13,10 +13,12 @@
 //! plus loin, l'export gardant les anciennes parties) n'est pas répétée, ni
 //! une position que le livre ne laisse plus atteindre.
 //!
-//! Sur la sortie d'erreur : le bilan, et toute partie gagnée dont un coup
+//! Sur la sortie d'erreur : le bilan, toute partie gagnée dont un coup
 //! diffère de ce que le livre jouerait aujourd'hui (un livre qui toucherait une
-//! victoire mérite d'être regardé avant la vague suivante).
-use std::collections::{BTreeMap, BTreeSet};
+//! victoire mérite d'être regardé avant la vague suivante), et toute position où
+//! le coup du livre a fait moins bien qu'un autre de nos coups (victoire = 1,
+//! nul = 1/2, défaite = 0, gagnées-perdues-nulles à côté de chaque coup).
+use std::collections::BTreeMap;
 
 use linkx_bot::notation::{format_move, parse_move, parse_record, tokens};
 use linkx_bot::search::book_lookup;
@@ -27,7 +29,9 @@ struct Node {
     won: usize,
     lost: usize,
     drawn: usize,
-    played: BTreeSet<String>,
+    /// Nos coups joués dans cette position, et le bilan de chacun : gagnées,
+    /// perdues, nulles.
+    by_move: BTreeMap<String, [usize; 3]>,
     parent: Option<String>,
     /// Coup que le livre joue aujourd'hui dans cette position.
     book: Option<String>,
@@ -89,12 +93,21 @@ fn main() {
                     book: book_lookup(&pos).map(format_move),
                     ..Node::default()
                 });
-                match issue {
-                    "gagne" => node.won += 1,
-                    "perdu" => node.lost += 1,
-                    _ => node.drawn += 1,
-                }
-                node.played.insert(played.clone());
+                let slot = match issue {
+                    "gagne" => {
+                        node.won += 1;
+                        0
+                    }
+                    "perdu" => {
+                        node.lost += 1;
+                        1
+                    }
+                    _ => {
+                        node.drawn += 1;
+                        2
+                    }
+                };
+                node.by_move.entry(played.clone()).or_default()[slot] += 1;
                 if !diverged {
                     node.reachable += 1;
                     reached.push(key.clone());
@@ -133,6 +146,9 @@ fn main() {
     for ((color, issue), n) in &tally {
         eprintln!("{color:<6} {issue:<6} {n}");
     }
+    for (key, node) in &nodes {
+        worse_book_move(key, node);
+    }
     let mut repairs = 0;
     for (key, node) in &nodes {
         if node.won > 0 {
@@ -159,7 +175,7 @@ fn main() {
             eprintln!("déjà corrigée : {color} « {prefix} », ici ou plus loin");
             continue;
         }
-        let played: Vec<&str> = node.played.iter().map(String::as_str).collect();
+        let played: Vec<&str> = node.by_move.keys().map(String::as_str).collect();
         eprintln!(
             "à corriger : {color} « {prefix} » joué {} ({} perdue(s), {} nulle(s))",
             played.join(", "),
@@ -170,4 +186,37 @@ fn main() {
         repairs += 1;
     }
     eprintln!("{repairs} position(s) à corriger");
+}
+
+/// Part des points marqués avec un coup : une victoire vaut 1, un nul 1/2.
+fn points(record: &[usize; 3]) -> f64 {
+    (record[0] as f64 + record[2] as f64 / 2.0) / record.iter().sum::<usize>() as f64
+}
+
+/// Signale une position où le livre joue un coup qui a fait moins bien, sur
+/// les parties exportées, qu'un autre de nos coups : une correction remontée
+/// trop haut peut ainsi perdre des victoires (vague 2 : `4Tr21` joué `4Lr37`,
+/// 1 victoire pour 8 défaites, après `4Lr38`, 2 pour 5).
+fn worse_book_move(key: &str, node: &Node) {
+    let Some(book) = &node.book else { return };
+    let Some(ours) = node.by_move.get(book) else {
+        return;
+    };
+    let better = node
+        .by_move
+        .iter()
+        .filter(|(m, r)| *m != book && points(r) > points(ours));
+    let better: Vec<String> = better
+        .map(|(m, r)| format!("{m} {}-{}-{}", r[0], r[1], r[2]))
+        .collect();
+    if !better.is_empty() {
+        let (color, prefix) = key.split_once('|').unwrap();
+        eprintln!(
+            "livre moins bon : {color} « {prefix} » livre {book} {}-{}-{}, mieux : {}",
+            ours[0],
+            ours[1],
+            ours[2],
+            better.join(", ")
+        );
+    }
 }
