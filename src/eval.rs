@@ -35,21 +35,26 @@ pub struct Weights {
 
 /// Ajustés par la méthode Texel (`examples/tune.rs`) sur 27 000 positions
 /// d'autoduel : 63,7 % puis 66,5 % contre les anciens poids (234 parties).
+/// Puis, après la vague 3, sur les 3 271 positions des parties de tournoi :
+/// perte 0,1362 -> 0,1287. Réglés sur les vagues 1 et 2 seules, ils prédisent
+/// mieux la vague 3 (0,1179 -> 0,1100) ; en autoduel contre les précédents
+/// (`empty=4,gap=1,distance=51,zone=297,tempo=188,nok=5,nnone=20,nkeep=300`) :
+/// 56-45-1 sur 102 parties à 1,5 et 3 s.
 pub const DEFAULT_WEIGHTS: Weights = Weights {
-    empty: 4,
-    gap: 1,
-    distance: 51,
+    empty: 5,
+    gap: 2,
+    distance: 44,
     second_axis: 16,
-    zone: 297,
-    tempo: 188,
-    narrow_ok: 5,
-    narrow_none: 20,
+    zone: 184,
+    tempo: 154,
+    narrow_ok: 2,
+    narrow_none: 30,
     deep_wells: true,
     wells3: true,
     cliff: true,
     zone_phase: true,
     vstep: true,
-    narrow_keep: 300,
+    narrow_keep: 427,
 };
 
 /// Poids d'avant l'ajustement : référence des tests qui isolent une option.
