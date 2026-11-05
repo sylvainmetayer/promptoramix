@@ -190,8 +190,9 @@ pub struct Options {
     pub threads: usize,
     /// Arrêt anticipé, en pour cent du budget : passé ce seuil, une itération
     /// complète qui confirme le même coup pour la troisième fois de suite
-    /// termine la recherche, la suivante n'ayant presque aucune chance d'aboutir.
-    /// 0 coupe l'arrêt anticipé.
+    /// termine la recherche. 0 le coupe, et c'est le défaut : à 55 %, il perd
+    /// 43-59 en autoduel (800 et 1 500 ms) contre la recherche jusqu'au bout,
+    /// l'itération inachevée changeant encore de coup assez souvent pour compter.
     pub soft_stop: u32,
 }
 
@@ -205,7 +206,7 @@ pub const DEFAULT_OPTIONS: Options = Options {
     book: true,
     eval_cache: true,
     threads: 1,
-    soft_stop: 55,
+    soft_stop: 0,
 };
 
 /// Profondeur en deçà de laquelle l'arrêt anticipé ne joue jamais.

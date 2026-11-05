@@ -113,6 +113,15 @@ autre. Vague 2 : contre `4Tr21`, `4Lr37` (correction de la vague 1) fait 1-8 là
 2-5 ; on est revenu à `4Lr38` et la correction est redescendue au coup suivant. Quand la recherche
 juge la position perdue quel que soit le coup, le bilan réel départage mieux que le score.
 
+Vague 3 : après `4Tr21 4Lr38 4Lr18`, `3Ir15` a perdu 6 fois sur 6 contre des adversaires qui
+rejouent leurs lignes (Zelda, CNOFRA, LinkxdIn) ; écarté, toutes les autres réponses perdent par force
+à 13 plis. Remonter d'un cran ne paie pas : sans `4Lr38` ni `4Lr37`, le mieux contre `4Tr21` est
+`4Lr35` à -1 980, contre -1 388. Le livre joue donc `4Ss3`, perdant contre un jeu parfait mais inédit,
+plutôt qu'un coup qui perdra à coup sûr la même partie.
+
+Une ligne `notation = coup` fixe une entrée sans recherche : `b = 4Lr34` rend instantané notre
+premier coup en bleu, celui que la recherche jouait déjà.
+
 ```bash
 cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
 cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
