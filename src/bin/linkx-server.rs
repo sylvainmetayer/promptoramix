@@ -210,13 +210,16 @@ fn ponder(config: &Config, slot: &Slot, after: Position) {
             return;
         };
         slot.pondering.store(true, SeqCst);
-        // Gain immédiat, mat trouvé ou profondeur maximale : une tranche de
-        // plus n'apprendrait rien et tournerait à vide.
+        // Gain immédiat, mat trouvé, profondeur maximale, ou réponse sans
+        // recherche (livre, coup unique, profondeur 0) : une tranche de plus
+        // n'apprendrait rien et tournerait à vide jusqu'à `PONDER_MAX`.
         let done = config.games.busy()
             || guard
                 .search(&after, PONDER_SLICE, PONDER_DEPTH)
                 .is_none_or(|r| {
-                    r.score.abs() >= MATE - PONDER_DEPTH as i32 || r.depth >= PONDER_DEPTH
+                    r.depth == 0
+                        || r.score.abs() >= MATE - PONDER_DEPTH as i32
+                        || r.depth >= PONDER_DEPTH
                 });
         slot.pondering.store(false, SeqCst);
         if done {

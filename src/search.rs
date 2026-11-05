@@ -188,6 +188,11 @@ pub struct Options {
     pub eval_cache: bool,
     /// Nombre de fils de recherche (Lazy SMP), 1 par défaut.
     pub threads: usize,
+    /// Arrêt anticipé, en pour cent du budget : passé ce seuil, une itération
+    /// complète qui confirme le même coup pour la troisième fois de suite
+    /// termine la recherche, la suivante n'ayant presque aucune chance d'aboutir.
+    /// 0 coupe l'arrêt anticipé.
+    pub soft_stop: u32,
 }
 
 pub const DEFAULT_OPTIONS: Options = Options {
@@ -200,7 +205,11 @@ pub const DEFAULT_OPTIONS: Options = Options {
     book: true,
     eval_cache: true,
     threads: 1,
+    soft_stop: 55,
 };
+
+/// Profondeur en deçà de laquelle l'arrêt anticipé ne joue jamais.
+const SOFT_STOP_MIN_DEPTH: u32 = 6;
 
 impl Searcher {
     pub fn new(tt_bits: u32) -> Self {
@@ -255,6 +264,7 @@ impl Searcher {
                 "zphase" => w.zone_phase = n != 0,
                 "vstep" => w.vstep = n != 0,
                 "threads" => s.options.threads = n.max(1) as usize,
+                "soft" => s.options.soft_stop = n.clamp(0, 100) as u32,
                 _ => panic!("clé inconnue {k}"),
             }
         }
@@ -543,6 +553,15 @@ impl Searcher {
         if moves.iter().any(|(m, _)| !self.excluded.contains(m)) {
             moves.retain(|(m, _)| !self.excluded.contains(m));
         }
+        if let [(only, _)] = moves[..] {
+            return Some(SearchResult {
+                best: only,
+                score: 0,
+                depth: 0,
+                nodes: 0,
+                elapsed: start.elapsed(),
+            });
+        }
         if self.options.book
             && let Some(m) = book_move(pos, &moves)
         {
@@ -609,6 +628,10 @@ impl Searcher {
             elapsed: start.elapsed(),
         };
         let mut result = done(moves[0].0, 0, 0, 0);
+        // Arrêt anticipé, fil principal seul : les auxiliaires suivent son drapeau.
+        let soft = (!self.helper && self.options.soft_stop > 0)
+            .then(|| self.deadline.saturating_duration_since(start) * self.options.soft_stop / 100);
+        let mut stable = 0u32;
         // Le décalage ne fait jamais dépasser `max_depth` ni sauter toute
         // itération ; `max_depth == 0` ne cherche rien, comme avant.
         let first = (1 + depth_offset).min(max_depth.max(1));
@@ -646,6 +669,11 @@ impl Searcher {
                 }
             }
             if let Some((m, s)) = iter_best {
+                stable = if m == result.best && result.depth > 0 {
+                    stable + 1
+                } else {
+                    0
+                };
                 // Un meilleur coup trouvé dans une itération interrompue a été
                 // entièrement vérifié : on le garde.
                 result = done(
@@ -662,6 +690,13 @@ impl Searcher {
             scored.sort_by_key(|&(_, s)| -s);
             moves = scored.into_iter().map(|(m, _)| m).collect();
             if alpha.abs() >= MATE - MAX_PLY as i32 {
+                break;
+            }
+            if let Some(soft) = soft
+                && depth >= SOFT_STOP_MIN_DEPTH
+                && stable >= 2
+                && start.elapsed() >= soft
+            {
                 break;
             }
         }
@@ -750,6 +785,34 @@ mod tests {
             (7, LOWER, -12345, e.best)
         );
         assert!(t.probe(0xDEAD_BEEF ^ 1 << 40).is_none());
+    }
+
+    #[test]
+    fn a_single_candidate_is_played_without_searching() {
+        let pos = parse_record("4Lr35 3Ir15").unwrap();
+        let mut legal = Vec::new();
+        pos.legal_moves(&mut legal);
+        let mut s = Searcher::new(16);
+        s.options.book = false;
+        s.excluded = legal[1..].to_vec();
+        let r = s.search(&pos, Duration::from_secs(5), 64).unwrap();
+        assert_eq!((r.best, r.depth, r.nodes), (legal[0], 0, 0));
+        assert!(r.elapsed < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn soft_stop_is_configurable_and_never_exceeds_the_budget() {
+        let pos = parse_record("4Lr35 3Ir15").unwrap();
+        let mut s = Searcher::new(16);
+        s.options.book = false;
+        s.configure("soft=0");
+        assert_eq!(s.options.soft_stop, 0);
+        s.configure("soft=1");
+        let budget = Duration::from_millis(400);
+        let r = s.search(&pos, budget, 64).unwrap();
+        assert!(r.elapsed <= budget + Duration::from_millis(100));
+        let mut p = pos;
+        assert!(p.play(r.best).is_ok());
     }
 
     #[test]
