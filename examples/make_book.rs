@@ -8,6 +8,8 @@
 //! Une ligne du fichier est une notation, éventuellement suivie de `! <coups>` :
 //! ces coups sont écartés de la recherche. C'est ainsi qu'on remplace un coup
 //! qui a perdu contre un adversaire déterministe, qui rejouerait la même partie.
+//! Une ligne `notation = <coup>` fixe le coup sans recherche : `b = 4Lr34` rend
+//! instantané notre premier coup en bleu sans changer celui qu'on joue déjà.
 //!
 //! `--keep` reprend telles quelles les entrées de `src/book.rs` dont la ligne
 //! n'a pas changé, et ne cherche que les nouvelles. `--out` écrit le résultat
@@ -24,12 +26,17 @@ const STARTS: [&str; 18] = [
     "3Ir15", "4Tr22", "3Ir12", "3Ir17", "3Ir14", "2r15", "3Lr24",
 ];
 
+/// Notation et coups écartés d'une ligne du fichier de positions.
+type Entry = (String, Vec<String>);
+
 const BOOK_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/book.rs");
 
 /// Clé d'une entrée : la notation et les coups écartés, tels qu'écrits dans le
 /// commentaire de `book.rs` (`« notation »` puis `sauf …`).
-fn entry_label(record: &str, excluded: &[String]) -> String {
-    if excluded.is_empty() {
+fn entry_label(record: &str, excluded: &[String], pinned: Option<&str>) -> String {
+    if let Some(mv) = pinned {
+        format!("« {record} » = {mv}")
+    } else if excluded.is_empty() {
         format!("« {record} »")
     } else {
         format!("« {record} » sauf {}", excluded.join(" "))
@@ -61,16 +68,24 @@ fn main() {
             .collect(),
         None => STARTS.iter().map(|s| s.to_string()).collect(),
     };
-    let entries: Vec<(String, Vec<String>)> = lines
+    let (entries, pins): (Vec<Entry>, Vec<Option<String>>) = lines
         .iter()
-        .map(|line| match line.split_once('!') {
-            Some((record, moves)) => (
-                record.trim().to_string(),
-                moves.split_whitespace().map(str::to_string).collect(),
+        .map(|line| match (line.split_once('!'), line.split_once('=')) {
+            (Some(_), Some(_)) => panic!("« {line} » : `!` et `=` ne vont pas ensemble"),
+            (Some((record, moves)), None) => (
+                (
+                    record.trim().to_string(),
+                    moves.split_whitespace().map(str::to_string).collect(),
+                ),
+                None,
             ),
-            None => (line.trim().to_string(), Vec::new()),
+            (None, Some((record, mv))) => (
+                (record.trim().to_string(), Vec::new()),
+                Some(mv.trim().to_string()),
+            ),
+            (None, None) => ((line.trim().to_string(), Vec::new()), None),
         })
-        .collect();
+        .unzip();
     // Deux lignes pour une même position, même écrite autrement : le livre ne
     // lirait que la première, la correction `!` d'une partie perdue serait
     // masquée sans un mot. Les coups écartés sont lus ici, avant des heures de
@@ -79,7 +94,8 @@ fn main() {
     let mut seen = HashMap::new();
     let parsed: Vec<(Position, Vec<Move>)> = entries
         .iter()
-        .map(|(record, excluded)| {
+        .zip(&pins)
+        .map(|((record, excluded), pin)| {
             let pos =
                 parse_record(record).unwrap_or_else(|e| panic!("« {record} » illisible : {e:?}"));
             if let Some(first) = seen.insert(pos.key, record.as_str()) {
@@ -100,6 +116,11 @@ fn main() {
                 legal.iter().any(|m| !excluded.contains(m)),
                 "« {record} » : tous les coups sont écartés"
             );
+            if let Some(t) = pin {
+                let m = parse_move(t)
+                    .unwrap_or_else(|_| panic!("« {record} » : coup imposé {t} illisible"));
+                assert!(legal.contains(&m), "« {record} » : coup imposé {t} illégal");
+            }
             (pos, excluded)
         })
         .collect();
@@ -122,7 +143,16 @@ fn main() {
     let mut out_lines = vec![String::new(); entries.len()];
     let mut todo = Vec::new();
     for (i, (record, excluded)) in entries.iter().enumerate() {
-        match existing.get(&entry_label(record, excluded)) {
+        if let Some(pin) = &pins[i] {
+            let mv = format_move(parse_move(pin).unwrap());
+            out_lines[i] = format!(
+                "    (0x{:016x}, \"{mv}\"), // {}, prof. 0\n",
+                parsed[i].0.key,
+                entry_label(record, excluded, Some(pin))
+            );
+            continue;
+        }
+        match existing.get(&entry_label(record, excluded, None)) {
             Some(line) => out_lines[i] = line.clone(),
             None => todo.push(i),
         }
@@ -145,10 +175,12 @@ fn main() {
                     let (pos, excluded_moves) = &parsed[i];
                     let mut s = Searcher::new(22);
                     s.options.book = false;
+                    // Le livre veut la recherche entière, pas l'arrêt anticipé.
+                    s.options.soft_stop = 0;
                     s.excluded = excluded_moves.clone();
                     let r = s.search(pos, Duration::from_secs(secs), 64).unwrap();
                     let mv = format_move(r.best);
-                    let label = entry_label(record, excluded);
+                    let label = entry_label(record, excluded, None);
                     eprintln!("{label:<40} -> {mv:<7} prof {} score {}", r.depth, r.score);
                     out_lines.lock().unwrap()[i] = format!(
                         "    (0x{:016x}, \"{mv}\"), // {label}, score {}, prof. {}\n",

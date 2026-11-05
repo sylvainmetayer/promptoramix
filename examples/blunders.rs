@@ -29,6 +29,7 @@ fn main() {
     let mut pos = parse_record(&played).unwrap();
     let mut s = Searcher::new(20);
     s.options.book = false;
+    s.options.soft_stop = 0;
     let mut previous: Option<i32> = None;
     for token in &tokens[skip..] {
         if *token == "--" {

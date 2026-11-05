@@ -42,12 +42,14 @@ curl -s localhost:8080/ -d '{"protocol":1,"game":"x","color":"blue","record":"",
 
 Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signature invalide reçoit un 401 ;
 absente, aucune vérification),
-`LINKX_MARGIN_MS` (800 : marge réseau retirée de `deadline_ms`), `LINKX_THREADS` (1 : fils de
+`LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`, 800 jusqu'à la vague 3 qui y a perdu
+une partie hors délai), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
 (réglages `clé=valeur,…` de l'évaluation, pour les essais), `LINKX_GAMES` (3 : parties dont la
 recherche est gardée d'un appel à l'autre, 0 pour repartir de zéro à chaque coup), `LINKX_PONDER`
 (1 : réflexion pendant le tour adverse, 0 pour la couper), `LINKX_JOURNAL` (absent : chemin d'un
-fichier où chaque appel est ajouté, horodaté, en plus de la sortie d'erreur).
+fichier où chaque appel est ajouté, horodaté, en plus de la sortie d'erreur, après la réponse ; les
+appels refusés en 400, 401 ou 409 y figurent aussi).
 
 ## Banc de duel
 
@@ -111,6 +113,15 @@ autre. Vague 2 : contre `4Tr21`, `4Lr37` (correction de la vague 1) fait 1-8 là
 2-5 ; on est revenu à `4Lr38` et la correction est redescendue au coup suivant. Quand la recherche
 juge la position perdue quel que soit le coup, le bilan réel départage mieux que le score.
 
+Vague 3 : après `4Tr21 4Lr38 4Lr18`, `3Ir15` a perdu 6 fois sur 6 contre des adversaires qui
+rejouent leurs lignes (Zelda, CNOFRA, LinkxdIn) ; écarté, toutes les autres réponses perdent par force
+à 13 plis. Remonter d'un cran ne paie pas : sans `4Lr38` ni `4Lr37`, le mieux contre `4Tr21` est
+`4Lr35` à -1 980, contre -1 388. Le livre joue donc `4Ss3`, perdant contre un jeu parfait mais inédit,
+plutôt qu'un coup qui perdra à coup sûr la même partie.
+
+Une ligne `notation = coup` fixe une entrée sans recherche : `b = 4Lr34` rend instantané notre
+premier coup en bleu, celui que la recherche jouait déjà.
+
 ```bash
 cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
 cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
@@ -131,7 +142,9 @@ cargo run --release --example blunders -- "<notation d'une partie perdue>" white
 ## Intégration continue
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
-  contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`.
+  contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`,
+  **seulement si** `src/`, `Cargo.*`, `Dockerfile` ou `.dockerignore` ont changé : chaque image poussée
+  est redéployée sur flip, et un redémarrage pendant une vague coûte des parties (vague 3).
 - `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
   (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).
 - Renovate tient les actions et les crates à jour.
@@ -139,3 +152,14 @@ cargo run --release --example blunders -- "<notation d'une partie perdue>" white
 ## Déploiement
 
 En ligne sur <https://promptoramix.sylvain.cloud>.
+
+Aucun redéploiement du mercredi soir au jeudi midi (vague de 0 h à 12 h, heure de Paris) : un
+conteneur qui redémarre perd l'appel en cours, et le proxy peut répondre à sa place.
+
+**Après une faute technique**, le journal tranche : une ligne pour la partie et le `record` fautifs
+avec sa durée en ms veut dire que le coup est parti à temps (le retard est ailleurs : proxy, réseau) ;
+aucune ligne, que l'appel n'a jamais atteint le service (redémarrage, proxy).
+
+```bash
+grep -F '[<id de la partie>]' /tmp/coups.log
+```
