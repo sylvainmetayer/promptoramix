@@ -36,6 +36,10 @@ struct MoveRequest {
 
 const MAX_CLOCK_SKEW_S: u64 = 300;
 const DEFAULT_DEADLINE_MS: u64 = 6000;
+/// Part du délai laissée hors de la recherche : réseau, TLS, proxy, arbitre.
+/// Vague 3 : à 800 ms, une recherche de 5,2 s a fini hors délai côté arbitre.
+/// 1 500 ms ne coûtent qu'un dixième de pli et absorbent un pic de latence.
+const DEFAULT_MARGIN_MS: u64 = 1500;
 /// La plateforme n'envoie jamais plus de deux appels à la fois ; au-delà, on
 /// répond vite et petit plutôt que de risquer la mémoire du conteneur.
 const MAX_SEARCHES: usize = 2;
@@ -232,7 +236,7 @@ impl Config {
     fn from_env() -> Self {
         Config {
             secret: std::env::var("LINKX_SECRET").ok().filter(|s| !s.is_empty()),
-            margin_ms: env_number("LINKX_MARGIN_MS", 800),
+            margin_ms: env_number("LINKX_MARGIN_MS", DEFAULT_MARGIN_MS),
             threads: env_number("LINKX_THREADS", 1).max(1) as usize,
             tuning: std::env::var("LINKX_CONFIG").unwrap_or_default(),
             searches: Semaphore::new(MAX_SEARCHES),
@@ -301,10 +305,11 @@ async fn play(
     if let Some(secret) = &config.secret
         && !signature_ok(secret, &headers, &body)
     {
-        eprintln!("signature refusée");
+        log(&config, "signature refusée -> 401".into());
         return reply(StatusCode::UNAUTHORIZED, json!({ "error": "signature" }));
     }
     let Ok(req) = serde_json::from_slice::<MoveRequest>(&body) else {
+        log(&config, "corps JSON illisible -> 400".into());
         return reply(StatusCode::BAD_REQUEST, json!({ "error": "json" }));
     };
     let game = match req.game {
@@ -316,10 +321,13 @@ async fn play(
     let pos = match parse_record_lenient(&record) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!(
-                "[{game}] notation refusée au coup {} : {}",
-                e.index,
-                e.reason.code()
+            log(
+                &config,
+                format!(
+                    "[{game}] notation refusée au coup {} : {} « {record} » -> 400",
+                    e.index,
+                    e.reason.code()
+                ),
             );
             return reply(StatusCode::BAD_REQUEST, json!({ "error": e.reason.code() }));
         }
@@ -327,6 +335,7 @@ async fn play(
     let mut legal = Vec::new();
     pos.legal_moves(&mut legal);
     let Some(&fallback) = legal.first() else {
+        log(&config, format!("[{game}] aucun coup « {record} » -> 409"));
         return reply(StatusCode::CONFLICT, json!({ "error": "no-move" }));
     };
     let to_move = if pos.to_move == 0 { "blue" } else { "white" };
@@ -407,11 +416,21 @@ async fn play(
         "[{game}] {to_move} « {record} » -> {mv} ({detail}, {} ms)",
         started.elapsed().as_millis()
     );
-    eprintln!("{line}");
-    if let Some(path) = &config.journal {
-        journal(path, &line);
-    }
+    log(&config, line);
     reply(StatusCode::OK, json!({ "move": mv }))
+}
+
+/// Consigne un appel sur la sortie d'erreur et au journal, **hors du chemin de
+/// la réponse** : un disque lent (sauvegarde nocturne, volume saturé) ne doit
+/// jamais retarder un coup déjà choisi.
+fn log(config: &Arc<Config>, line: String) {
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || {
+        eprintln!("{line}");
+        if let Some(path) = &config.journal {
+            journal(path, &line);
+        }
+    });
 }
 
 /// Ajoute une ligne horodatée au journal des coups. Au mieux : une erreur
@@ -601,7 +620,7 @@ mod tests {
         let (status, json) = post(config.clone(), body, HeaderMap::new()).await;
         assert_eq!(status, StatusCode::OK);
         let mv = json["move"].as_str().unwrap();
-        let written = std::fs::read_to_string(&path).unwrap();
+        let written = read_journal(&path).await;
         let _ = std::fs::remove_file(&path);
         let line = written.lines().next().expect("une ligne");
         assert!(
@@ -612,6 +631,42 @@ mod tests {
             line.split(' ').next().unwrap().parse::<u64>().is_ok(),
             "{line}"
         );
+    }
+
+    /// Le journal s'écrit après la réponse : on lui laisse un instant.
+    async fn read_journal(path: &Path) -> String {
+        for _ in 0..200 {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("journal {} jamais écrit", path.display());
+    }
+
+    #[tokio::test]
+    async fn journal_records_refused_calls() {
+        let path =
+            std::env::temp_dir().join(format!("linkx-journal-refus-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut config = config(Some("k"));
+        Arc::get_mut(&mut config).unwrap().journal = Some(path.clone());
+        let (status, _) = post(config, r#"{"record":""}"#, headers(&now(), "sha256=00")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let written = read_journal(&path).await;
+        let _ = std::fs::remove_file(&path);
+        assert!(written.contains("signature refusée -> 401"), "{written}");
+    }
+
+    #[test]
+    fn default_margin_leaves_room_outside_the_search() {
+        let config = Config {
+            margin_ms: DEFAULT_MARGIN_MS,
+            ..Arc::into_inner(config(None)).unwrap()
+        };
+        assert!(config.budget(DEFAULT_DEADLINE_MS) <= Duration::from_millis(4500));
     }
 
     #[tokio::test]

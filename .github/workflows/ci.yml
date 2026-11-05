@@ -37,9 +37,28 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
+      # Chaque image poussée sur :main change de digest (étiquettes de date et de
+      # révision) et Renovate la redéploie sur flip : un commit qui ne touche pas
+      # l'image (mise à jour d'une action, README) ne doit pas redémarrer le bot.
+      # Vague 3 : une telle mise à jour, fusionnée deux heures avant la vague, est
+      # le suspect n° 1 d'une réponse illisible et d'un hors-délai.
+      - id: changes
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -z "${BEFORE//0/}" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$BEFORE" HEAD -- Dockerfile .dockerignore Cargo.toml Cargo.lock src; then
+            echo "Image inchangée depuis $BEFORE : rien à publier."
+            echo "image=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.changes.outputs.image == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -68,7 +87,7 @@ jobs:
           curl -fs -X POST 127.0.0.1:8080/ -d '{"protocol":1,"game":"ci","color":"blue","record":"","deadline_ms":2500}' | grep -q '"move"'
           docker stop bot
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.changes.outputs.image == 'true'
         with:
           context: .
           platforms: linux/amd64
