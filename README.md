@@ -27,7 +27,7 @@ Protocole : [`docs/protocole-ia.md`](https://github.com/marmelab/linkx/blob/main
 | `src/notation.rs` | lecture / écriture de la notation, rejeu d'une partie |
 | `src/eval.rs` | distance de connexion pondérée par la gravité, plus grande zone |
 | `src/search.rs` | négamax PVS, table de transposition, killers, historique, limite de temps |
-| `src/bin/linkx-server.rs` | service HTTP (toute route `POST`), signature HMAC facultative |
+| `src/bin/linkx-server.rs` | service HTTP (toute route `POST`), signature HMAC obligatoire (sauf `LINKX_INSECURE=1`) |
 | `src/bin/linkx-cli.rs` | coup pour une notation (`--ms`, `--depth`) ; `--legal` pour le contrôle croisé |
 | `duel/` | banc d'essai contre l'IA de la maison officielle (Node 24) |
 
@@ -36,12 +36,13 @@ Protocole : [`docs/protocole-ia.md`](https://github.com/marmelab/linkx/blob/main
 ```bash
 cargo test --release                 # tests unitaires
 cargo run --release --bin linkx-cli -- "4Lr35 3Ir15" --ms 2000
-PORT=8080 LINKX_SECRET=… cargo run --release --bin linkx-server
+PORT=8080 LINKX_INSECURE=1 cargo run --release --bin linkx-server   # en local ; en production LINKX_SECRET=…
 curl -s localhost:8080/ -d '{"protocol":1,"game":"x","color":"blue","record":"","deadline_ms":6000}'
 ```
 
-Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signature invalide reçoit un 401 ;
-absente, aucune vérification),
+Variables du serveur : `PORT` (8080), `LINKX_SECRET` (obligatoire : toute signature invalide reçoit
+un 401 ; absente ou vide, le serveur refuse de démarrer), `LINKX_INSECURE` (`1` : démarrer sans
+secret, aucune vérification, pour les essais en local),
 `LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`, 800 jusqu'à la vague 3 qui y a perdu
 une partie hors délai), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`

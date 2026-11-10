@@ -470,11 +470,26 @@ async fn shutdown() {
     }
 }
 
+/// Sans secret, n'importe qui lancerait des recherches sur la machine publique :
+/// il faut le demander explicitement par `LINKX_INSECURE=1`.
+fn may_start(secret: &Option<String>, insecure: Option<&str>) -> bool {
+    secret.is_some() || insecure == Some("1")
+}
+
 #[tokio::main]
 async fn main() {
     let config = Arc::new(Config::from_env());
     // Un réglage invalide doit faire échouer le démarrage, pas une partie.
     Searcher::new(4).configure(&config.tuning);
+    if !may_start(
+        &config.secret,
+        std::env::var("LINKX_INSECURE").ok().as_deref(),
+    ) {
+        eprintln!(
+            "LINKX_SECRET absent ou vide : démarrage refusé (LINKX_INSECURE=1 pour accepter les requêtes non signées)"
+        );
+        std::process::exit(1);
+    }
     if config.secret.is_none() {
         eprintln!("LINKX_SECRET absent : les signatures ne sont pas vérifiées");
     }
@@ -518,6 +533,16 @@ mod tests {
             .unwrap()
             .as_secs()
             .to_string()
+    }
+
+    #[test]
+    fn refuses_to_start_without_secret_unless_insecure() {
+        assert!(!may_start(&None, None));
+        assert!(!may_start(&None, Some("")));
+        assert!(!may_start(&None, Some("0")));
+        assert!(!may_start(&None, Some("true")));
+        assert!(may_start(&None, Some("1")));
+        assert!(may_start(&Some("s".into()), None));
     }
 
     fn config(secret: Option<&str>) -> Arc<Config> {
