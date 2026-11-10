@@ -174,6 +174,21 @@ pub struct Searcher {
     /// Coups écartés à la racine : `make_book` s'en sert pour remplacer un
     /// coup qui a perdu en tournoi. Ignoré s'il ne restait rien d'autre.
     pub excluded: Vec<Move>,
+    /// Tampons de `negamax`, un par demi-coup : réutilisés d'un nœud à
+    /// l'autre au lieu d'allouer à chaque nœud.
+    bufs: Vec<NodeBufs>,
+}
+
+#[derive(Clone, Default)]
+struct NodeBufs {
+    moves: Vec<(Move, u128)>,
+    /// Enfants à trier par évaluation, dans l'ordre des coups.
+    children: Vec<(Move, Position)>,
+    /// (clé, rang dans `children`), triés : l'ordre de jeu des enfants.
+    ranks: Vec<(i32, usize)>,
+    /// Tampons de `order`.
+    keys: Vec<(i64, usize)>,
+    sorted: Vec<(Move, u128)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +242,7 @@ impl Searcher {
             weights: DEFAULT_WEIGHTS,
             options: DEFAULT_OPTIONS,
             excluded: Vec::new(),
+            bufs: vec![NodeBufs::default(); MAX_PLY],
         }
     }
 
@@ -303,6 +319,7 @@ impl Searcher {
             weights: self.weights,
             options: self.options,
             excluded: Vec::new(),
+            bufs: vec![NodeBufs::default(); MAX_PLY],
         }
     }
 
@@ -339,9 +356,19 @@ impl Searcher {
         })
     }
 
-    fn order(&self, moves: &mut [(Move, u128)], tt_move: Option<Move>, ply: usize) {
+    /// Trie `moves` comme `sort_by_cached_key` (clé calculée une fois, tri
+    /// stable), dans les tampons `keys` et `sorted` au lieu d'allouer.
+    fn order(
+        &self,
+        moves: &mut Vec<(Move, u128)>,
+        tt_move: Option<Move>,
+        ply: usize,
+        keys: &mut Vec<(i64, usize)>,
+        sorted: &mut Vec<(Move, u128)>,
+    ) {
         let k = self.killers[ply.min(MAX_PLY - 1)];
-        moves.sort_by_cached_key(|(m, _)| {
+        keys.clear();
+        keys.extend(moves.iter().enumerate().map(|(i, (m, _))| {
             let mut s = self.history[m.shape as usize][m.orient as usize][m.col as usize] as i64;
             if Some(*m) == tt_move {
                 s += 1 << 40;
@@ -351,8 +378,12 @@ impl Searcher {
             s += orientations(m.shape as usize)[m.orient as usize]
                 .cells
                 .len() as i64;
-            -s
-        });
+            (-s, i)
+        }));
+        keys.sort_unstable();
+        sorted.clear();
+        sorted.extend(keys.iter().map(|&(_, i)| moves[i]));
+        std::mem::swap(moves, sorted);
     }
 
     fn terminal_score(pos: &Position, ply: usize) -> i32 {
@@ -363,13 +394,21 @@ impl Searcher {
         }
     }
 
-    fn negamax(
+    fn negamax(&mut self, pos: &Position, depth: i32, alpha: i32, beta: i32, ply: usize) -> i32 {
+        let mut bufs = std::mem::take(&mut self.bufs[ply]);
+        let score = self.node(pos, depth, alpha, beta, ply, &mut bufs);
+        self.bufs[ply] = bufs;
+        score
+    }
+
+    fn node(
         &mut self,
         pos: &Position,
         depth: i32,
         mut alpha: i32,
         beta: i32,
         ply: usize,
+        bufs: &mut NodeBufs,
     ) -> i32 {
         self.nodes += 1;
         if pos.outcome.is_some() {
@@ -383,9 +422,8 @@ impl Searcher {
             // La plupart des feuilles sont loin de tout gain : ni coups à
             // générer ni gain immédiat à chercher, l'évaluation suffit.
             if may_win_now(pos, pos.to_move) {
-                let mut moves = Vec::with_capacity(160);
-                pos.legal_drops_for(pos.to_move, &mut moves);
-                if Self::winning_move(pos, &moves).is_some() {
+                pos.legal_drops_for(pos.to_move, &mut bufs.moves);
+                if Self::winning_move(pos, &bufs.moves).is_some() {
                     return MATE - ply as i32 - 1;
                 }
             }
@@ -414,13 +452,19 @@ impl Searcher {
                 }
             }
         }
-        let mut moves = Vec::with_capacity(160);
-        pos.legal_drops_for(pos.to_move, &mut moves);
-        if may_win_now(pos, pos.to_move) && Self::winning_move(pos, &moves).is_some() {
+        let NodeBufs {
+            moves,
+            children,
+            ranks,
+            keys,
+            sorted,
+        } = bufs;
+        pos.legal_drops_for(pos.to_move, moves);
+        if may_win_now(pos, pos.to_move) && Self::winning_move(pos, moves).is_some() {
             return MATE - ply as i32 - 1;
         }
 
-        self.order(&mut moves, tt_move, ply);
+        self.order(moves, tt_move, ply, keys, sorted);
         let killers = self.killers[ply.min(MAX_PLY - 1)];
         // Sans tri par évaluation, les enfants sont joués à la demande : une
         // coupure dès les premiers coups évite de jouer tous les autres.
@@ -428,37 +472,36 @@ impl Searcher {
         // Le coup de la table est joué avant d'évaluer les autres enfants : s'il
         // coupe, et c'est le cas le plus fréquent, leurs évaluations sont épargnées.
         let staged = usize::from(sort_by_eval && tt_move.is_some());
-        // `children[j]` est l'enfant de `moves[staged + j]`, trié par évaluation.
-        let mut children: Vec<(Move, Position)> = Vec::new();
+        // `children[ranks[j].1]` : le j-ième enfant de `moves[staged..]` par évaluation.
         let alpha0 = alpha;
         let mut best = -MATE * 2;
         let mut best_move = moves[0].0;
         for i in 0..moves.len() {
             if sort_by_eval && i == staged {
-                children = moves[staged..]
-                    .iter()
-                    .map(|&(m, added)| {
-                        let mut c = *pos;
-                        c.play_drop(m, added);
-                        (m, c)
-                    })
-                    .collect();
                 let p = pos.to_move;
                 let w = self.weights;
                 let use_cache = self.options.eval_cache;
                 let cache = &mut self.eval_cache;
-                children.sort_by_cached_key(|(_, c)| {
+                children.clear();
+                ranks.clear();
+                // Évaluations dans l'ordre des coups, puis tri à départage par
+                // le rang : même ordre et même cache que `sort_by_cached_key`.
+                for (j, &(m, added)) in moves[staged..].iter().enumerate() {
+                    let mut c = *pos;
+                    c.play_drop(m, added);
                     let s = if c.outcome.is_some() {
                         if c.winner() == Some(p) { MATE } else { 0 }
                     } else {
-                        let e = eval_leaf(cache, use_cache, &w, c);
+                        let e = eval_leaf(cache, use_cache, &w, &c);
                         if c.to_move == p { e } else { -e }
                     };
-                    -s
-                });
+                    children.push((m, c));
+                    ranks.push((-s, j));
+                }
+                ranks.sort_unstable();
             }
             let (m, child) = if sort_by_eval && i >= staged {
-                children[i - staged]
+                children[ranks[i - staged].1]
             } else {
                 let (m, added) = moves[i];
                 let mut c = *pos;
@@ -524,7 +567,7 @@ impl Searcher {
         };
         // La sonde précède le test de gain immédiat : rien ne doit entrer dans
         // la table sans l'avoir passé.
-        debug_assert!(Self::winning_move(pos, &moves).is_none());
+        debug_assert!(Self::winning_move(pos, moves).is_none());
         self.tt.store(
             key,
             Entry {
@@ -583,7 +626,7 @@ impl Searcher {
                 elapsed: start.elapsed(),
             });
         }
-        self.order(&mut moves, None, 0);
+        self.order(&mut moves, None, 0, &mut Vec::new(), &mut Vec::new());
         let helpers = self.options.threads.max(1) - 1;
         let mut result = std::thread::scope(|scope| {
             let handles: Vec<_> = (1..=helpers)
@@ -898,6 +941,44 @@ mod tests {
         pos.legal_moves(&mut all);
         s.excluded = all;
         assert!(s.search(&pos, Duration::from_millis(300), 4).is_some());
+    }
+
+    #[test]
+    fn fixed_depth_search_is_unchanged() {
+        // Empreinte de la recherche à profondeur fixe sur les positions de
+        // `bench_search` : une optimisation pure ne change ni coup, ni score,
+        // ni nœuds. À remplacer seulement si l'arbre change exprès (poids,
+        // options), en le disant dans le commit.
+        let expected = [
+            ("", "4Lsr11", 765, 198541),
+            ("4Tr24", "4Lr38", 167, 104671),
+            ("4Lr35 3Ir15 3Ir15 4Lr38", "4Lsr11", 1131, 76908),
+            (
+                "4Lsr11 4Lsr17 4Lsr37 4Lr35 3Ir12 2r12",
+                "3Lr37",
+                -420,
+                37081,
+            ),
+            (
+                "4Tr21 4Tr25 3Ir12 2r16 3Ir12 12 2r16 4Sr17",
+                "4Lr37",
+                726,
+                29964,
+            ),
+        ];
+        let got: Vec<_> = expected
+            .iter()
+            .map(|&(record, ..)| {
+                let mut s = Searcher::new(20);
+                s.options.book = false;
+                let pos = parse_record(record).unwrap();
+                let r = s.search(&pos, Duration::from_secs(600), 6).unwrap();
+                (record, format_move(r.best), r.score, r.nodes)
+            })
+            .collect();
+        for ((record, best, score, nodes), want) in got.iter().zip(&expected) {
+            assert_eq!((*record, best.as_str(), *score, *nodes), *want, "{got:?}");
+        }
     }
 
     #[test]
