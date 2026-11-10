@@ -79,14 +79,16 @@ parties réelles enrichissent le livre : le serveur consigne chaque appel (`LINK
 sur flip ; à défaut, `docker logs`), `journal` en tire les positions de nos trois premiers coups que
 le livre ne couvre pas, et `make_book` les analyse.
 
-```bash
-cd ~/Documents/homelab/ansible && mise exec -- ansible flip -b -m fetch \
-  -a "src=/opt/apps/promptoramix/journal/coups.log dest=/tmp/coups.log flat=true"
-cargo run --release --example journal -- 5 < /tmp/coups.log >> examples/book_positions.txt
-sort -u -o examples/book_positions.txt examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
-cargo test --release   # vérifie que chaque entrée du livre est légale
-```
+Après chaque vague, `./apres-vague.sh` enchaîne toute la routine et s'arrête à la première erreur
+(prérequis : l'export « Mes parties » dans `linkx-parties.json` ; `HOMELAB`, `~/Documents/homelab`
+par défaut, pour ansible) :
+
+1. récupère le journal de flip dans `/tmp/coups.log` (ansible `fetch`) ;
+2. `journal -- 5` ajoute à `examples/book_positions.txt` les positions non couvertes, puis `sort -u` ;
+3. `wave` y ajoute les corrections des parties perdues (ci-dessous), affichées au passage ;
+4. `make_book -- 240 8 … --keep` puis `cargo fmt` ;
+5. `wave` à nouveau : s'arrête si une victoire est touchée par le livre, à examiner à la main ;
+6. `cargo test --release`, qui vérifie que chaque entrée du livre est légale.
 
 Le livre se lit aussi en miroir gauche-droite, seule symétrie du jeu : une entrée pour `4Tr21`
 répond aussi à `4Tr27`. `--keep` reprend les entrées déjà calculées et ne cherche que les lignes
@@ -123,11 +125,8 @@ plutôt qu'un coup qui perdra à coup sûr la même partie.
 Une ligne `notation = coup` fixe une entrée sans recherche : `b = 4Lr34` rend instantané notre
 premier coup en bleu, celui que la recherche jouait déjà.
 
-```bash
-cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
-cargo run --release --example wave -- linkx-parties.json > /dev/null   # victoires touchées ?
-```
+Ces trois étapes (`wave`, `make_book --keep`, `wave` pour les victoires touchées) font partie de
+`./apres-vague.sh`.
 
 Hors tournoi, un sparring d'une autre famille que la maison joue le même rôle : `mcts_duel` (UCT,
 simulations guidées par l'évaluation) gagne rarement, mais quand il gagne c'est souvent par une
