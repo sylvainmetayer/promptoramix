@@ -144,7 +144,7 @@ cargo run --release --example blunders -- "<notation d'une partie perdue>" white
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
   contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`,
-  **seulement si** `src/`, `Cargo.*`, `Dockerfile` ou `.dockerignore` ont changé : chaque image poussée
+  **seulement si** `src/`, `Cargo.*`, `rust-toolchain.toml`, `Dockerfile` ou `.dockerignore` ont changé : chaque image poussée
   est redéployée sur flip, et un redémarrage pendant une vague coûte des parties (vague 3).
 - `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
   (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).

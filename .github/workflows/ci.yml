@@ -50,7 +50,7 @@ jobs:
         run: |
           if [ -z "${BEFORE//0/}" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
             echo "image=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "$BEFORE" HEAD -- Dockerfile .dockerignore Cargo.toml Cargo.lock src; then
+          elif git diff --quiet "$BEFORE" HEAD -- Dockerfile .dockerignore rust-toolchain.toml Cargo.toml Cargo.lock src; then
             echo "Image inchangée depuis $BEFORE : rien à publier."
             echo "image=false" >> "$GITHUB_OUTPUT"
           else
