@@ -470,11 +470,26 @@ async fn shutdown() {
     }
 }
 
+/// Sans secret, n'importe qui lancerait des recherches sur la machine publique :
+/// il faut le demander explicitement par `LINKX_INSECURE=1`.
+fn check_secret(
+    secret: &Option<String>,
+    insecure: Result<String, std::env::VarError>,
+) -> Result<(), &'static str> {
+    if secret.is_some() || insecure.as_deref() == Ok("1") {
+        return Ok(());
+    }
+    Err(
+        "LINKX_SECRET absent ou vide : démarrage refusé (LINKX_INSECURE=1 pour accepter les requêtes non signées)",
+    )
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), &'static str> {
     let config = Arc::new(Config::from_env());
     // Un réglage invalide doit faire échouer le démarrage, pas une partie.
     Searcher::new(4).configure(&config.tuning);
+    check_secret(&config.secret, std::env::var("LINKX_INSECURE"))?;
     if config.secret.is_none() {
         eprintln!("LINKX_SECRET absent : les signatures ne sont pas vérifiées");
     }
@@ -489,6 +504,7 @@ async fn main() {
         .unwrap();
     // Sans cela, l'arrêt du runtime attendrait la fin des réflexions (`PONDER_MAX`).
     config.games.close();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -518,6 +534,17 @@ mod tests {
             .unwrap()
             .as_secs()
             .to_string()
+    }
+
+    #[test]
+    fn refuses_to_start_without_secret_unless_insecure() {
+        use std::env::VarError::NotPresent;
+        assert!(check_secret(&None, Err(NotPresent)).is_err());
+        assert!(check_secret(&None, Ok(String::new())).is_err());
+        assert!(check_secret(&None, Ok("0".into())).is_err());
+        assert!(check_secret(&None, Ok("true".into())).is_err());
+        assert!(check_secret(&None, Ok("1".into())).is_ok());
+        assert!(check_secret(&Some("s".into()), Err(NotPresent)).is_ok());
     }
 
     fn config(secret: Option<&str>) -> Arc<Config> {

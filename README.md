@@ -27,7 +27,7 @@ Protocole : [`docs/protocole-ia.md`](https://github.com/marmelab/linkx/blob/main
 | `src/notation.rs` | lecture / écriture de la notation, rejeu d'une partie |
 | `src/eval.rs` | distance de connexion pondérée par la gravité, plus grande zone |
 | `src/search.rs` | négamax PVS, table de transposition, killers, historique, limite de temps |
-| `src/bin/linkx-server.rs` | service HTTP (toute route `POST`), signature HMAC facultative |
+| `src/bin/linkx-server.rs` | service HTTP (toute route `POST`), signature HMAC obligatoire (sauf `LINKX_INSECURE=1`) |
 | `src/bin/linkx-cli.rs` | coup pour une notation (`--ms`, `--depth`) ; `--legal` pour le contrôle croisé |
 | `duel/` | banc d'essai contre l'IA de la maison officielle (Node 24) |
 
@@ -36,12 +36,13 @@ Protocole : [`docs/protocole-ia.md`](https://github.com/marmelab/linkx/blob/main
 ```bash
 cargo test --release                 # tests unitaires
 cargo run --release --bin linkx-cli -- "4Lr35 3Ir15" --ms 2000
-PORT=8080 LINKX_SECRET=… cargo run --release --bin linkx-server
+PORT=8080 LINKX_INSECURE=1 cargo run --release --bin linkx-server   # en local ; en production LINKX_SECRET=…
 curl -s localhost:8080/ -d '{"protocol":1,"game":"x","color":"blue","record":"","deadline_ms":6000}'
 ```
 
-Variables du serveur : `PORT` (8080), `LINKX_SECRET` (si définie, toute signature invalide reçoit un 401 ;
-absente, aucune vérification),
+Variables du serveur : `PORT` (8080), `LINKX_SECRET` (obligatoire : toute signature invalide reçoit
+un 401 ; absente ou vide, le serveur refuse de démarrer), `LINKX_INSECURE` (`1` : démarrer sans
+secret, aucune vérification, pour les essais en local),
 `LINKX_MARGIN_MS` (1500 : marge réseau retirée de `deadline_ms`, 800 jusqu'à la vague 3 qui y a perdu
 une partie hors délai), `LINKX_THREADS` (1 : fils de
 recherche par requête ; la plateforme envoie au plus deux requêtes simultanées), `LINKX_CONFIG`
@@ -78,14 +79,16 @@ parties réelles enrichissent le livre : le serveur consigne chaque appel (`LINK
 sur flip ; à défaut, `docker logs`), `journal` en tire les positions de nos trois premiers coups que
 le livre ne couvre pas, et `make_book` les analyse.
 
-```bash
-cd ~/Documents/homelab/ansible && mise exec -- ansible flip -b -m fetch \
-  -a "src=/opt/apps/promptoramix/journal/coups.log dest=/tmp/coups.log flat=true"
-cargo run --release --example journal -- 5 < /tmp/coups.log >> examples/book_positions.txt
-sort -u -o examples/book_positions.txt examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
-cargo test --release   # vérifie que chaque entrée du livre est légale
-```
+Après chaque vague, `./apres-vague.sh` enchaîne toute la routine et s'arrête à la première erreur
+(prérequis : l'export « Mes parties » dans `linkx-parties.json` ; `HOMELAB`, `~/Documents/homelab`
+par défaut, pour ansible) :
+
+1. récupère le journal de flip dans `/tmp/coups.log` (ansible `fetch`) ;
+2. `journal -- 5` ajoute à `examples/book_positions.txt` les positions non couvertes, puis `sort -u` ;
+3. `wave` y ajoute les corrections des parties perdues (ci-dessous), affichées au passage ;
+4. `make_book -- 240 8 … --keep` puis `cargo fmt` ;
+5. `wave` à nouveau : s'arrête si une victoire est touchée par le livre, à examiner à la main ;
+6. `cargo test --release`, qui vérifie que chaque entrée du livre est légale.
 
 Le livre se lit aussi en miroir gauche-droite, seule symétrie du jeu : une entrée pour `4Tr21`
 répond aussi à `4Tr27`. `--keep` reprend les entrées déjà calculées et ne cherche que les lignes
@@ -122,11 +125,8 @@ plutôt qu'un coup qui perdra à coup sûr la même partie.
 Une ligne `notation = coup` fixe une entrée sans recherche : `b = 4Lr34` rend instantané notre
 premier coup en bleu, celui que la recherche jouait déjà.
 
-```bash
-cargo run --release --example wave -- linkx-parties.json >> examples/book_positions.txt
-cargo run --release --example make_book -- 240 8 examples/book_positions.txt --keep && cargo fmt
-cargo run --release --example wave -- linkx-parties.json > /dev/null   # victoires touchées ?
-```
+Ces trois étapes (`wave`, `make_book --keep`, `wave` pour les victoires touchées) font partie de
+`./apres-vague.sh`.
 
 Hors tournoi, un sparring d'une autre famille que la maison joue le même rôle : `mcts_duel` (UCT,
 simulations guidées par l'évaluation) gagne rarement, mais quand il gagne c'est souvent par une
@@ -143,7 +143,7 @@ cargo run --release --example blunders -- "<notation d'une partie perdue>" white
 
 - `ci.yml` : `cargo fmt`, `clippy -D warnings`, tests ; puis image `ghcr.io/sylvainmetayer/promptoramix`
   contrôlée (`/health` puis un coup) et, sur `main`, poussée avec les étiquettes `main` et `sha-…`,
-  **seulement si** `src/`, `Cargo.*`, `Dockerfile` ou `.dockerignore` ont changé : chaque image poussée
+  **seulement si** `src/`, `Cargo.*`, `rust-toolchain.toml`, `Dockerfile` ou `.dockerignore` ont changé : chaque image poussée
   est redéployée sur flip, et un redémarrage pendant une vague coûte des parties (vague 3).
 - `quality.yml` : couverture `cargo-llvm-cov` et rapport Clippy envoyés à SonarQube Cloud
   (secret `SONAR_TOKEN`, analyse automatique désactivée côté SonarCloud).
