@@ -12,7 +12,7 @@ workflows:
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
     '.github/workflows/quality.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
-        - 'sonarsource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65'
+        - 'sonarsource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4'
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
         - 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'
     '.github/workflows/verify-lockfile.yml':
@@ -43,9 +43,9 @@ dependencies:
         commit: 'sha1-f87e5991a6d7451dcb8d9637bfbc97413f497069'
         owner_id: 5429470
         repo_id: 288485773
-    'sonarsource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65':
-        ref: 'v8.4.1'
-        commit: 'sha1-e805d875275f728fac1885b413934be6d7c63f65'
+    'sonarsource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4':
+        ref: 'v8.5.0'
+        commit: 'sha1-59202af334b4ba7b5db01b701b8e79f8b3bef0f4'
         owner_id: 545988
         repo_id: 366408409
     'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0':
