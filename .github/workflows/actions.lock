@@ -14,7 +14,7 @@ workflows:
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'sonarsource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4'
         - 'swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0'
-        - 'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'
+        - 'taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21'
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
 dependencies:
@@ -53,8 +53,8 @@ dependencies:
         commit: 'sha1-d1527c8f67ef9af357290475d4af4b0fab8f12e0'
         owner_id: 580492
         repo_id: 298565987
-    'taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39':
-        ref: 'v2.90.3'
-        commit: 'sha1-cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'
+    'taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21':
+        ref: 'v2.90.4'
+        commit: 'sha1-4a76afe23f9e08d2d9550fb56e556444e8611d21'
         owner_id: 43724913
         repo_id: 442947557
